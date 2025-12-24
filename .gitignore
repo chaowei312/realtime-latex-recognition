@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Data & Datasets
+data/
+*.tgz
+*.tar.gz
+*.zip
+*.pkl
+*.pickle
+
+# Model checkpoints & outputs
+checkpoints/
+outputs/
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+.env
+.env.local
+
