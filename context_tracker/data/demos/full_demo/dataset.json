@@ -1,0 +1,123 @@
+{
+  "stats": {
+    "success": 8,
+    "failed": 2,
+    "skipped": 0
+  },
+  "num_examples": 10,
+  "examples": [
+    {
+      "id": "matrix_add_0003",
+      "latex_context": "\\begin{pmatrix} i & 0 \\\\ 0 & i \\end{pmatrix}",
+      "updated_latex": "\\begin{pmatrix} i_{2} & 0 \\\\ 0 & i_{2} \\end{pmatrix}",
+      "operation": "ADD",
+      "edit_symbol": "unknown",
+      "category": "matrix",
+      "is_initial_state": false,
+      "context_image": "context_images\\matrix_add_0003_context.png",
+      "crop_image": "crop_images\\matrix_add_0003_crop.png",
+      "target_image": "target_images\\matrix_add_0003_target.png"
+    },
+    {
+      "id": "algebra_replace_0002",
+      "latex_context": "x^2 - y",
+      "updated_latex": "x^2 + y",
+      "operation": "REPLACE",
+      "edit_symbol": "unknown",
+      "category": "algebra",
+      "is_initial_state": false,
+      "context_image": "context_images\\algebra_replace_0002_context.png",
+      "crop_image": "crop_images\\algebra_replace_0002_crop.png",
+      "target_image": "target_images\\algebra_replace_0002_target.png"
+    },
+    {
+      "id": "diagram_add_0002",
+      "latex_context": "\\begin{tikzcd} I \\arrow[r, \\\"k\\\"] & B_2 \\end{tikzcd}",
+      "updated_latex": "\\begin{tikzcd} I \\arrow[r, \\\"k\\\"] & B_2 \\arrow[r, \\\"n\\\"] & \\mathcal{C} \\end{tikzcd}",
+      "operation": "ADD",
+      "edit_symbol": "unknown",
+      "category": "diagram",
+      "is_initial_state": false
+    },
+    {
+      "id": "single_add_0006",
+      "latex_context": "c",
+      "updated_latex": "c_{0}",
+      "operation": "ADD",
+      "edit_symbol": "unknown",
+      "category": "single_symbol",
+      "is_initial_state": false,
+      "context_image": "context_images\\single_add_0006_context.png",
+      "crop_image": "crop_images\\single_add_0006_crop.png",
+      "target_image": "target_images\\single_add_0006_target.png"
+    },
+    {
+      "id": "single_add_0003",
+      "latex_context": "\\theta",
+      "updated_latex": "\\theta^{3}",
+      "operation": "ADD",
+      "edit_symbol": "unknown",
+      "category": "single_symbol",
+      "is_initial_state": false,
+      "context_image": "context_images\\single_add_0003_context.png",
+      "crop_image": "crop_images\\single_add_0003_crop.png",
+      "target_image": "target_images\\single_add_0003_target.png"
+    },
+    {
+      "id": "diagram_add_0001",
+      "latex_context": "\\begin{tikzcd} P \\arrow[r, \\\"h\\\"] & \\mathcal{D} \\arrow[d, \\\"g_*\\\"] \\\\ & F \\end{tikzcd}",
+      "updated_latex": "\\begin{tikzcd} P \\arrow[r, \\\"h\\\"] \\arrow[dr, \\\"\\varphi\\\"'] & \\mathcal{D} \\arrow[d, \\\"g_*\\\"] \\\\ & F \\end{tikzcd}",
+      "operation": "ADD",
+      "edit_symbol": "unknown",
+      "category": "diagram",
+      "is_initial_state": false
+    },
+    {
+      "id": "initial_0017",
+      "latex_context": "",
+      "updated_latex": "4",
+      "operation": "ADD",
+      "edit_symbol": "4",
+      "category": "single_symbol",
+      "is_initial_state": true,
+      "crop_image": "crop_images\\initial_0017_crop.png",
+      "target_image": "target_images\\initial_0017_target.png"
+    },
+    {
+      "id": "calculus_add_0004",
+      "latex_context": "\\int u^2 \\, du = \\frac{u^3}{3}",
+      "updated_latex": "\\int u^2 \\, du = \\frac{u^3}{3} + C",
+      "operation": "ADD",
+      "edit_symbol": "unknown",
+      "category": "calculus",
+      "is_initial_state": false,
+      "context_image": "context_images\\calculus_add_0004_context.png",
+      "crop_image": "crop_images\\calculus_add_0004_crop.png",
+      "target_image": "target_images\\calculus_add_0004_target.png"
+    },
+    {
+      "id": "matrix_replace_0003",
+      "latex_context": "\\begin{pmatrix} j & f \\\\ 2 & x \\end{pmatrix}",
+      "updated_latex": "\\begin{bmatrix} j & f \\\\ 2 & x \\end{bmatrix}",
+      "operation": "REPLACE",
+      "edit_symbol": "unknown",
+      "category": "matrix",
+      "is_initial_state": false,
+      "context_image": "context_images\\matrix_replace_0003_context.png",
+      "crop_image": "crop_images\\matrix_replace_0003_crop.png",
+      "target_image": "target_images\\matrix_replace_0003_target.png"
+    },
+    {
+      "id": "algebra_replace_0004",
+      "latex_context": "x^2 - v",
+      "updated_latex": "x^2 + v",
+      "operation": "REPLACE",
+      "edit_symbol": "unknown",
+      "category": "algebra",
+      "is_initial_state": false,
+      "context_image": "context_images\\algebra_replace_0004_context.png",
+      "crop_image": "crop_images\\algebra_replace_0004_crop.png",
+      "target_image": "target_images\\algebra_replace_0004_target.png"
+    }
+  ]
+}

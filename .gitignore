@@ -17,13 +17,18 @@ env/
 # Jupyter Notebook
 .ipynb_checkpoints/
 
-# Data & Datasets
-data/
+# Data & Datasets (large files only)
 *.tgz
 *.tar.gz
 *.zip
 *.pkl
 *.pickle
+
+# Large dataset folders (keep code, ignore raw data)
+**/words.tgz/
+**/line_text_dataset/
+**/stroke_letter_dataset/
+**/visualizations/
 
 # Model checkpoints & outputs
 checkpoints/

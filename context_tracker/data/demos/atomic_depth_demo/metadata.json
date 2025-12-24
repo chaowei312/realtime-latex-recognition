@@ -1,0 +1,79 @@
+[
+  {
+    "depth": 1,
+    "category": "single_symbol",
+    "subcategory": "replace_letter",
+    "operation": "REPLACE",
+    "before_latex": "i",
+    "after_latex": "f",
+    "difficulty": "easy",
+    "difficulty_score": 0.061,
+    "image_path": "atomic_depth_demo/depth_1_single_symbol.png"
+  },
+  {
+    "depth": 2,
+    "category": "matrix",
+    "subcategory": "add_column",
+    "operation": "ADD",
+    "before_latex": "\\begin{pmatrix} \\mu \\\\ \\lambda \\end{pmatrix}",
+    "after_latex": "\\begin{pmatrix} \\mu & g \\\\ \\lambda & g \\end{pmatrix}",
+    "difficulty": "easy",
+    "difficulty_score": 0.269,
+    "image_path": "atomic_depth_demo/depth_2_matrix.png"
+  },
+  {
+    "depth": 3,
+    "category": "calculus",
+    "subcategory": "add_bounds",
+    "operation": "ADD",
+    "before_latex": "\\int v^2 \\, dv",
+    "after_latex": "\\int_{0}^{1} v^2 \\, dv",
+    "difficulty": "medium",
+    "difficulty_score": 0.344,
+    "image_path": "atomic_depth_demo/depth_3_calculus.png"
+  },
+  {
+    "depth": 4,
+    "category": "fraction",
+    "subcategory": "nested_fraction",
+    "operation": "REPLACE",
+    "before_latex": "\\frac{\\frac{a}{b}}{c}",
+    "after_latex": "\\frac{\\frac{a}{b}}{\\frac{c}{d}}",
+    "difficulty": "medium",
+    "difficulty_score": 0.349,
+    "image_path": "atomic_depth_demo/depth_4_fraction.png"
+  },
+  {
+    "depth": 5,
+    "category": "fraction",
+    "subcategory": "deep_nested",
+    "operation": "ADD",
+    "before_latex": "\\frac{x^{2}}{y}",
+    "after_latex": "\\frac{\\frac{x^{2}}{y^{3}}}{z^{n}}",
+    "difficulty": "medium",
+    "difficulty_score": 0.44,
+    "image_path": "atomic_depth_demo/depth_5_fraction.png"
+  },
+  {
+    "depth": 6,
+    "category": "calculus",
+    "subcategory": "complex_integral",
+    "operation": "REPLACE",
+    "before_latex": "\\int_{0}^{1} x \\, dx",
+    "after_latex": "\\int_{0}^{\\frac{1}{n}} \\frac{x^{\\frac{1}{2}}}{y^{3}} \\, dx",
+    "difficulty": "hard",
+    "difficulty_score": 0.603,
+    "image_path": "atomic_depth_demo/depth_6_calculus.png"
+  },
+  {
+    "depth": 7,
+    "category": "calculus",
+    "subcategory": "very_complex",
+    "operation": "REPLACE",
+    "before_latex": "\\sum_{n=0}^{\\infty} a_n",
+    "after_latex": "\\sum_{n=0}^{\\infty} \\frac{\\frac{x^{n^{2}}}{n!}}{\\sqrt{\\frac{1}{n+1}}}",
+    "difficulty": "hard",
+    "difficulty_score": 0.708,
+    "image_path": "atomic_depth_demo/depth_7_calculus.png"
+  }
+]

@@ -1,0 +1,375 @@
+{
+  "description": "Groups of easily confused handwritten symbols for training disambiguation",
+  "version": "1.0",
+  "confusion_groups": [
+    {
+      "id": "zero_o_theta",
+      "symbols": ["0", "O", "o", "θ", "Θ"],
+      "latex": ["0", "O", "o", "\\theta", "\\Theta"],
+      "difficulty": "high",
+      "notes": "Zero vs letter O vs theta - very common confusion"
+    },
+    {
+      "id": "one_l_I_pipe",
+      "symbols": ["1", "l", "I", "|", "ℓ"],
+      "latex": ["1", "l", "I", "|", "\\ell"],
+      "difficulty": "high",
+      "notes": "One vs lowercase L vs uppercase I vs pipe - most common confusion"
+    },
+    {
+      "id": "two_z",
+      "symbols": ["2", "z", "Z"],
+      "latex": ["2", "z", "Z"],
+      "difficulty": "medium",
+      "notes": "Two vs zee - especially in superscripts like x^2 vs x^z"
+    },
+    {
+      "id": "five_S",
+      "symbols": ["5", "S", "s"],
+      "latex": ["5", "S", "s"],
+      "difficulty": "medium",
+      "notes": "Five vs S - context usually resolves"
+    },
+    {
+      "id": "six_b_G",
+      "symbols": ["6", "b", "G"],
+      "latex": ["6", "b", "G"],
+      "difficulty": "medium",
+      "notes": "Six vs b vs G - cursive 6 can look like b"
+    },
+    {
+      "id": "eight_B",
+      "symbols": ["8", "B", "β"],
+      "latex": ["8", "B", "\\beta"],
+      "difficulty": "medium",
+      "notes": "Eight vs B vs beta"
+    },
+    {
+      "id": "nine_q_g",
+      "symbols": ["9", "q", "g"],
+      "latex": ["9", "q", "g"],
+      "difficulty": "medium",
+      "notes": "Nine vs q vs g - descender confusion"
+    },
+    {
+      "id": "alpha_a",
+      "symbols": ["α", "a"],
+      "latex": ["\\alpha", "a"],
+      "difficulty": "high",
+      "notes": "Greek alpha vs Latin a - cursive alpha very similar"
+    },
+    {
+      "id": "beta_B_ss",
+      "symbols": ["β", "B", "ß"],
+      "latex": ["\\beta", "B", "\\ss"],
+      "difficulty": "medium",
+      "notes": "Greek beta vs B vs German eszett"
+    },
+    {
+      "id": "gamma_y",
+      "symbols": ["γ", "y"],
+      "latex": ["\\gamma", "y"],
+      "difficulty": "low",
+      "notes": "Gamma vs y - gamma has curved tail"
+    },
+    {
+      "id": "delta_d_partial",
+      "symbols": ["δ", "d", "∂"],
+      "latex": ["\\delta", "d", "\\partial"],
+      "difficulty": "medium",
+      "notes": "Delta vs d vs partial derivative"
+    },
+    {
+      "id": "epsilon_e_in",
+      "symbols": ["ε", "ϵ", "e", "∈"],
+      "latex": ["\\varepsilon", "\\epsilon", "e", "\\in"],
+      "difficulty": "high",
+      "notes": "Epsilon variants vs e vs element-of"
+    },
+    {
+      "id": "eta_n",
+      "symbols": ["η", "n"],
+      "latex": ["\\eta", "n"],
+      "difficulty": "medium",
+      "notes": "Eta vs n - eta has descender"
+    },
+    {
+      "id": "kappa_k",
+      "symbols": ["κ", "k", "K"],
+      "latex": ["\\kappa", "k", "K"],
+      "difficulty": "low",
+      "notes": "Kappa vs k"
+    },
+    {
+      "id": "mu_u",
+      "symbols": ["μ", "u"],
+      "latex": ["\\mu", "u"],
+      "difficulty": "medium",
+      "notes": "Mu vs u - mu has descender"
+    },
+    {
+      "id": "nu_v",
+      "symbols": ["ν", "v"],
+      "latex": ["\\nu", "v"],
+      "difficulty": "high",
+      "notes": "Nu vs v - very similar shape"
+    },
+    {
+      "id": "xi_zeta",
+      "symbols": ["ξ", "ζ"],
+      "latex": ["\\xi", "\\zeta"],
+      "difficulty": "medium",
+      "notes": "Xi vs zeta - both have similar curves"
+    },
+    {
+      "id": "omicron_o_zero",
+      "symbols": ["ο", "o", "0"],
+      "latex": ["o", "o", "0"],
+      "difficulty": "high",
+      "notes": "Greek omicron vs Latin o vs zero - identical shape"
+    },
+    {
+      "id": "pi_n",
+      "symbols": ["π", "n"],
+      "latex": ["\\pi", "n"],
+      "difficulty": "low",
+      "notes": "Pi vs n - pi has flat top, n has curve"
+    },
+    {
+      "id": "rho_p",
+      "symbols": ["ρ", "p"],
+      "latex": ["\\rho", "p"],
+      "difficulty": "medium",
+      "notes": "Rho vs p - rho has longer descender"
+    },
+    {
+      "id": "sigma_o",
+      "symbols": ["σ", "o", "ο"],
+      "latex": ["\\sigma", "o", "o"],
+      "difficulty": "low",
+      "notes": "Sigma vs o - sigma has tail"
+    },
+    {
+      "id": "tau_t",
+      "symbols": ["τ", "t", "+"],
+      "latex": ["\\tau", "t", "+"],
+      "difficulty": "medium",
+      "notes": "Tau vs t vs plus - tau has wider top"
+    },
+    {
+      "id": "upsilon_u_v_y",
+      "symbols": ["υ", "u", "v", "y"],
+      "latex": ["\\upsilon", "u", "v", "y"],
+      "difficulty": "medium",
+      "notes": "Upsilon vs u vs v vs y"
+    },
+    {
+      "id": "phi_empty",
+      "symbols": ["φ", "ϕ", "Φ", "∅", "ø"],
+      "latex": ["\\varphi", "\\phi", "\\Phi", "\\emptyset", "\\o"],
+      "difficulty": "medium",
+      "notes": "Phi variants vs empty set"
+    },
+    {
+      "id": "chi_x",
+      "symbols": ["χ", "x", "X", "×"],
+      "latex": ["\\chi", "x", "X", "\\times"],
+      "difficulty": "high",
+      "notes": "Chi vs x vs times - very common confusion"
+    },
+    {
+      "id": "omega_w",
+      "symbols": ["ω", "w", "Ω"],
+      "latex": ["\\omega", "w", "\\Omega"],
+      "difficulty": "medium",
+      "notes": "Omega vs w"
+    },
+    {
+      "id": "times_x",
+      "symbols": ["×", "x", "X", "·"],
+      "latex": ["\\times", "x", "X", "\\cdot"],
+      "difficulty": "high",
+      "notes": "Multiplication signs vs variable x"
+    },
+    {
+      "id": "dots",
+      "symbols": [".", "·", "∙", ","],
+      "latex": [".", "\\cdot", "\\bullet", ","],
+      "difficulty": "medium",
+      "notes": "Decimal point vs multiplication dot vs comma"
+    },
+    {
+      "id": "minus_dash",
+      "symbols": ["-", "−", "–", "—"],
+      "latex": ["-", "-", "-", "-"],
+      "difficulty": "low",
+      "notes": "Minus vs various dashes - usually equivalent"
+    },
+    {
+      "id": "prime_quote",
+      "symbols": ["′", "'", "`", "ʹ"],
+      "latex": ["'", "'", "'", "'"],
+      "difficulty": "low",
+      "notes": "Prime vs apostrophe vs backtick"
+    },
+    {
+      "id": "sum_sigma_E",
+      "symbols": ["∑", "Σ", "E"],
+      "latex": ["\\sum", "\\Sigma", "E"],
+      "difficulty": "medium",
+      "notes": "Summation vs capital sigma vs E"
+    },
+    {
+      "id": "product_pi",
+      "symbols": ["∏", "Π", "π"],
+      "latex": ["\\prod", "\\Pi", "\\pi"],
+      "difficulty": "medium",
+      "notes": "Product vs capital pi vs lowercase pi"
+    },
+    {
+      "id": "integral_S_f",
+      "symbols": ["∫", "S", "f"],
+      "latex": ["\\int", "S", "f"],
+      "difficulty": "medium",
+      "notes": "Integral vs S vs f - cursive similarities"
+    },
+    {
+      "id": "subset_C",
+      "symbols": ["⊂", "⊆", "C", "c", "("],
+      "latex": ["\\subset", "\\subseteq", "C", "c", "("],
+      "difficulty": "medium",
+      "notes": "Subset symbols vs C vs parenthesis"
+    },
+    {
+      "id": "in_epsilon",
+      "symbols": ["∈", "∊", "ε", "ϵ", "e"],
+      "latex": ["\\in", "\\in", "\\varepsilon", "\\epsilon", "e"],
+      "difficulty": "high",
+      "notes": "Element-of vs epsilon variants"
+    },
+    {
+      "id": "forall_A",
+      "symbols": ["∀", "A"],
+      "latex": ["\\forall", "A"],
+      "difficulty": "medium",
+      "notes": "For-all vs upside-down A vs A"
+    },
+    {
+      "id": "exists_E",
+      "symbols": ["∃", "E", "∄"],
+      "latex": ["\\exists", "E", "\\nexists"],
+      "difficulty": "medium",
+      "notes": "Exists vs backwards E vs E"
+    },
+    {
+      "id": "nabla_delta_triangle",
+      "symbols": ["∇", "Δ", "△", "▽"],
+      "latex": ["\\nabla", "\\Delta", "\\triangle", "\\triangledown"],
+      "difficulty": "medium",
+      "notes": "Nabla vs delta vs triangles"
+    },
+    {
+      "id": "infinity_eight",
+      "symbols": ["∞", "8", "oo"],
+      "latex": ["\\infty", "8", "oo"],
+      "difficulty": "low",
+      "notes": "Infinity vs 8 - infinity is horizontal"
+    },
+    {
+      "id": "approx_equals",
+      "symbols": ["≈", "≃", "≅", "=", "~"],
+      "latex": ["\\approx", "\\simeq", "\\cong", "=", "\\sim"],
+      "difficulty": "medium",
+      "notes": "Various approximately-equal symbols"
+    },
+    {
+      "id": "leq_lt",
+      "symbols": ["<", "≤", "⟨", "〈"],
+      "latex": ["<", "\\leq", "\\langle", "\\langle"],
+      "difficulty": "low",
+      "notes": "Less than vs less-equal vs angle bracket"
+    },
+    {
+      "id": "geq_gt",
+      "symbols": [">", "≥", "⟩", "〉"],
+      "latex": [">", "\\geq", "\\rangle", "\\rangle"],
+      "difficulty": "low",
+      "notes": "Greater than vs greater-equal vs angle bracket"
+    },
+    {
+      "id": "paren_bracket",
+      "symbols": ["(", "[", "{", "⟨"],
+      "latex": ["(", "[", "\\{", "\\langle"],
+      "difficulty": "low",
+      "notes": "Various opening brackets"
+    },
+    {
+      "id": "lambda_A",
+      "symbols": ["λ", "Λ", "A"],
+      "latex": ["\\lambda", "\\Lambda", "A"],
+      "difficulty": "medium",
+      "notes": "Lambda vs capital lambda vs A"
+    },
+    {
+      "id": "c_C_subset",
+      "symbols": ["c", "C", "⊂", "(", "ℂ"],
+      "latex": ["c", "C", "\\subset", "(", "\\mathbb{C}"],
+      "difficulty": "medium",
+      "notes": "Lowercase c vs C vs subset vs complex numbers"
+    }
+  ],
+  "priority_groups": [
+    "one_l_I_pipe",
+    "zero_o_theta",
+    "alpha_a",
+    "nu_v",
+    "chi_x",
+    "epsilon_e_in",
+    "two_z"
+  ],
+  "context_disambiguation_rules": [
+    {
+      "pattern": "{}/2 = 0.5",
+      "likely": "1",
+      "unlikely": ["l", "I"],
+      "reason": "Arithmetic context"
+    },
+    {
+      "pattern": "\\sum_{i={}}^{n}",
+      "likely": "0",
+      "unlikely": ["O", "o"],
+      "reason": "Summation lower bound usually 0 or 1"
+    },
+    {
+      "pattern": "x^{}",
+      "likely": "2",
+      "unlikely": ["z"],
+      "reason": "Squared is most common exponent"
+    },
+    {
+      "pattern": "{} \\in \\mathbb{R}",
+      "likely": "x",
+      "unlikely": ["×", "χ"],
+      "reason": "Element-of expects variable, not operator"
+    },
+    {
+      "pattern": "2 {} 3 = 6",
+      "likely": "×",
+      "unlikely": ["x", "χ"],
+      "reason": "Multiplication context"
+    },
+    {
+      "pattern": "f({}) = 1",
+      "likely": "0",
+      "unlikely": ["O", "o"],
+      "reason": "Function evaluation often at 0"
+    },
+    {
+      "pattern": "\\sin({}) = 0",
+      "likely": "0",
+      "unlikely": ["O", "θ"],
+      "reason": "sin(0) = 0 is common"
+    }
+  ]
+}
+

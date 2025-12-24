@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stroke Capture Tool</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 520px 1fr;
+            gap: 20px;
+        }
+        h1 { color: #00d4ff; margin-bottom: 5px; font-size: 22px; }
+        h3 { color: #00d4ff; margin-bottom: 8px; font-size: 14px; }
+        .subtitle { color: #888; font-size: 12px; margin-bottom: 15px; }
+        
+        .canvas-area { background: #16213e; border-radius: 12px; padding: 15px; }
+        #drawCanvas {
+            background: white;
+            border-radius: 8px;
+            cursor: crosshair;
+            display: block;
+        }
+        
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            margin: 10px 0;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: transform 0.1s;
+        }
+        button:hover { transform: scale(1.02); }
+        button:disabled { opacity: 0.5; }
+        
+        .btn-primary { background: #4CAF50; color: white; }
+        .btn-danger { background: #f44336; color: white; }
+        .btn-secondary { background: #607d8b; color: white; }
+        .btn-purple { background: #9c27b0; color: white; }
+        
+        .sidebar {
+            display: grid;
+            grid-template-rows: auto auto auto 1fr;
+            gap: 12px;
+            max-height: calc(100vh - 40px);
+        }
+        .panel { background: #16213e; border-radius: 12px; padding: 12px; }
+        
+        .input-row { display: flex; gap: 6px; margin-bottom: 8px; }
+        input, select {
+            padding: 6px 10px;
+            border: 2px solid #0f3460;
+            border-radius: 6px;
+            background: #1a1a2e;
+            color: #eee;
+            font-size: 12px;
+            flex: 1;
+        }
+        input:focus, select:focus { outline: none; border-color: #00d4ff; }
+        
+        .symbol-grid {
+            display: grid;
+            grid-template-columns: repeat(10, 1fr);
+            gap: 3px;
+            max-height: 90px;
+            overflow-y: auto;
+        }
+        .symbol-btn {
+            padding: 5px;
+            background: #0f3460;
+            border: 2px solid transparent;
+            border-radius: 4px;
+            color: #eee;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .symbol-btn:hover { background: #1a4a7a; }
+        .symbol-btn.selected { border-color: #00d4ff; background: #00d4ff22; }
+        .symbol-btn.has-data { background: #1b5e20; }
+        
+        .stroke-list {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .stroke-chip {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: #0f3460;
+            border-radius: 20px;
+            font-size: 12px;
+        }
+        .stroke-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        
+        .saved-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .saved-item {
+            background: #0f3460;
+            border-radius: 6px;
+            padding: 8px;
+            text-align: center;
+            font-size: 11px;
+        }
+        .saved-item .name { color: #00d4ff; font-weight: bold; }
+        .saved-item .count { color: #4CAF50; }
+        
+        .status {
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        .status.info { background: #0f3460; }
+        .status.success { background: #1b5e20; }
+        .status.warning { background: #f57c00; }
+        
+        #jsonOutput {
+            width: 100%;
+            height: 100%;
+            min-height: 180px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #7ee787;
+            font-family: 'Consolas', monospace;
+            font-size: 10px;
+            padding: 8px;
+        }
+        
+        .stats {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #888;
+            margin-top: 10px;
+        }
+        .stats span { color: #00d4ff; font-weight: bold; }
+        
+        .instructions {
+            background: #0f3460;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            line-height: 1.6;
+        }
+        .instructions b { color: #4CAF50; }
+        .instructions kbd {
+            background: #1a1a2e;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="canvas-area">
+            <h1>✏️ Stroke Capture Tool</h1>
+            <div class="subtitle">Draw symbol → Save → Repeat for variations</div>
+            
+            <canvas id="drawCanvas" width="490" height="420"></canvas>
+            
+            <div class="toolbar">
+                <button class="btn-primary" onclick="saveStrokes()">💾 Save (Enter)</button>
+                <button class="btn-secondary" onclick="undoStroke()">↩ Undo (Z)</button>
+                <button class="btn-danger" onclick="clearCanvas()">🗑 Clear (C)</button>
+                <button class="btn-purple" onclick="downloadJSON()">📥 Download</button>
+                <button class="btn-secondary" onclick="loadJSON()">📂 Load</button>
+            </div>
+            
+            <div class="stroke-list" id="strokeList"></div>
+            
+            <div class="status info" id="status">Draw the symbol. Each pen stroke = stroke0, stroke1, stroke2...</div>
+            
+            <div class="stats">
+                Symbols: <span id="statSymbols">0</span> |
+                Variations: <span id="statVariations">0</span> |
+                Combinations: <span id="statCombos">0</span>
+            </div>
+        </div>
+        
+        <div class="sidebar">
+            <div class="panel">
+                <h3>1. Select Symbol</h3>
+                <div class="input-row">
+                    <input type="text" id="customSymbol" placeholder="Type custom symbol or search...">
+                    <select id="symbolCategory" onchange="buildSymbolGrid()">
+                        <option value="A-Z">Uppercase Letters (A-Z)</option>
+                        <option value="a-z">Lowercase Letters (a-z)</option>
+                        <option value="0-9">Digits (0-9)</option>
+                        <option value="Greek-Lower">Greek Lowercase (α,β,γ,π=3.14...)</option>
+                        <option value="Greek-Upper">Greek Uppercase (Π=product,Σ=sum)</option>
+                        <option value="Arithmetic">Arithmetic (+,-,×,÷,^,_)</option>
+                        <option value="Relations">Relations (=,≠,≤,≥,⊂,∈)</option>
+                        <option value="Calculus">Calculus (∫,∂,∑,○=contour mod)</option>
+                        <option value="Sets">Set Theory (∅,∪,∩,ℕ,ℤ,ℝ,ℂ)</option>
+                        <option value="Logic">Logic (∀,∃,¬,∧,∨,⇒,⇔)</option>
+                        <option value="Arrows">Arrows/Morphisms (→,⇒,↦,↪,↠)</option>
+                        <option value="Category">Category Theory (∘,⊗,⊕,≅,⊣)</option>
+                        <option value="Brackets">Brackets/Delimiters (⟨⟩,⌈⌉,⌊⌋)</option>
+                        <option value="Misc">Miscellaneous (°,…,★,∠,♯)</option>
+                    </select>
+                </div>
+                <div class="symbol-grid" id="symbolGrid"></div>
+            </div>
+            
+            <div class="panel">
+                <h3>2. Saved for: <span id="currentSymLabel">A</span> <button onclick="deleteSymbol()" style="padding:2px 8px;font-size:10px;background:#f44336;color:white;border:none;border-radius:4px;cursor:pointer;margin-left:8px;" title="Delete all data for this symbol">🗑</button></h3>
+                <div class="saved-grid" id="savedGrid">
+                    <div style="color:#666;font-size:11px;grid-column:1/-1;">No data yet</div>
+                </div>
+            </div>
+            
+            <div class="panel" style="overflow:hidden;">
+                <h3>JSON Output</h3>
+                <textarea id="jsonOutput" readonly></textarea>
+            </div>
+            
+            <div class="instructions">
+                <b>Workflow:</b><br>
+                1. Select symbol<br>
+                2. Draw full symbol (strokes auto-named stroke0, stroke1...)<br>
+                3. Press <kbd>Enter</kbd> to save<br>
+                4. Draw again for another variation (aim for 3-5 per symbol)<br>
+                5. Download JSON when done<br><br>
+                <b>Tips:</b><br>
+                • Draw strokes in same order each time!<br>
+                • Green = has data, more variations = better<br>
+                • Priority: A-Z, 0-9, Greek, then math symbols<br>
+                • ○ is contour modifier (∫+○=∮)
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const SYMBOLS = {
+            // Basic
+            'A-Z': 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split(''),
+            'a-z': 'abcdefghijklmnopqrstuvwxyz'.split(''),
+            '0-9': '0123456789'.split(''),
+            // Greek
+            'Greek-Lower': ['α','β','γ','δ','ε','ζ','η','θ','ι','κ','λ','μ','ν','ξ','ο','π','ρ','σ','ς','τ','υ','φ','χ','ψ','ω'],
+            'Greek-Upper': ['Α','Β','Γ','Δ','Ε','Ζ','Η','Θ','Ι','Κ','Λ','Μ','Ν','Ξ','Ο','Π','Ρ','Σ','Τ','Υ','Φ','Χ','Ψ','Ω'],
+            // Operators
+            'Arithmetic': ['+','-','×','÷','±','∓','·','∗','⋅','/','^','_'],
+            'Relations': ['=','≠','<','>','≤','≥','≪','≫','≈','≃','≅','≡','∼','≺','≻','∋'],
+            // Calculus & Analysis (compositional: ∫ + ○ = ∮, √ + n = nth root, ′′ = ″)
+            'Calculus': ['∫','∂','∇','∞','′','∑','∏','√','lim','○'],
+            // Set Theory (⊂,⊃,⊆,⊇,∈,∉ moved here from Relations)
+            'Sets': ['∅','∪','∩','∖','⊂','⊃','⊆','⊇','∈','∉','ℕ','ℤ','ℚ','ℝ','ℂ','ℵ','℘'],
+            // Logic (⇒,⇐,⇔ kept here, removed from Arrows; ⊢,⊥ kept here)
+            'Logic': ['∀','∃','∄','¬','∧','∨','⇒','⇐','⇔','⊢','⊨','⊤','⊥','∴','∵'],
+            // Arrows (removed ⇒,⇐,⇔ - they're in Logic)
+            'Arrows': ['→','←','↑','↓','↔','⇑','⇓','↦','⟶','⟵','↪','↠','⟹','⟸','⟺','↻','↺'],
+            // Category Theory (removed ≅,≃,≡ - in Relations; removed ⊢ - in Logic; ⊕ kept here)
+            'Category': ['∘','⊗','⊕','⊖','⊙','†','‡','⊣','⋊','⋉','⋈'],
+            // Brackets
+            'Brackets': ['(',')','[',']','{','}','⟨','⟩','|','‖','⌈','⌉','⌊','⌋'],
+            // Misc Math (removed ⊥ - in Logic)
+            'Misc': ['!','?','%','°','…','⋯','⋮','⋱','★','∠','∥','∦','♯','♭','♮']
+        };
+        
+        const LATEX = {
+            // Greek lowercase
+            'α':'\\alpha','β':'\\beta','γ':'\\gamma','δ':'\\delta','ε':'\\epsilon','ζ':'\\zeta',
+            'η':'\\eta','θ':'\\theta','ι':'\\iota','κ':'\\kappa','λ':'\\lambda','μ':'\\mu',
+            'ν':'\\nu','ξ':'\\xi','ο':'o','π':'\\pi','ρ':'\\rho','σ':'\\sigma','ς':'\\varsigma',
+            'τ':'\\tau','υ':'\\upsilon','φ':'\\phi','χ':'\\chi','ψ':'\\psi','ω':'\\omega',
+            // Greek uppercase
+            'Α':'A','Β':'B','Γ':'\\Gamma','Δ':'\\Delta','Ε':'E','Ζ':'Z','Η':'H','Θ':'\\Theta',
+            'Ι':'I','Κ':'K','Λ':'\\Lambda','Μ':'M','Ν':'N','Ξ':'\\Xi','Ο':'O','Π':'\\Pi',
+            'Ρ':'P','Σ':'\\Sigma','Τ':'T','Υ':'\\Upsilon','Φ':'\\Phi','Χ':'X','Ψ':'\\Psi','Ω':'\\Omega',
+            // Operators
+            '×':'\\times','÷':'\\div','±':'\\pm','∓':'\\mp','·':'\\cdot','∗':'\\ast','⋅':'\\cdot',
+            // Relations
+            '≠':'\\neq','≤':'\\leq','≥':'\\geq','≪':'\\ll','≫':'\\gg','≈':'\\approx','≃':'\\simeq',
+            '≅':'\\cong','≡':'\\equiv','∼':'\\sim','≺':'\\prec','≻':'\\succ',
+            '⊂':'\\subset','⊃':'\\supset','⊆':'\\subseteq','⊇':'\\supseteq','∈':'\\in','∉':'\\notin','∋':'\\ni',
+            // Calculus (∮ = ∫ + ○ composed)
+            '∫':'\\int','∂':'\\partial','∇':'\\nabla','∞':'\\infty',
+            '′':'\'','∑':'\\sum','∏':'\\prod','√':'\\sqrt','lim':'\\lim',
+            '○':'\\circ',  // circle modifier for contour integrals
+            // Sets
+            '∅':'\\emptyset','∪':'\\cup','∩':'\\cap','∖':'\\setminus',
+            'ℕ':'\\mathbb{N}','ℤ':'\\mathbb{Z}','ℚ':'\\mathbb{Q}','ℝ':'\\mathbb{R}','ℂ':'\\mathbb{C}',
+            'ℵ':'\\aleph','℘':'\\wp',
+            // Logic
+            '∀':'\\forall','∃':'\\exists','∄':'\\nexists','¬':'\\neg','∧':'\\land','∨':'\\lor',
+            '⊕':'\\oplus','⇒':'\\Rightarrow','⇐':'\\Leftarrow','⇔':'\\Leftrightarrow',
+            '⊢':'\\vdash','⊨':'\\models','⊤':'\\top','⊥':'\\bot','∴':'\\therefore','∵':'\\because',
+            // Arrows
+            '→':'\\to','←':'\\leftarrow','↑':'\\uparrow','↓':'\\downarrow','↔':'\\leftrightarrow',
+            '⇑':'\\Uparrow','⇓':'\\Downarrow','↦':'\\mapsto','⟶':'\\longrightarrow','⟵':'\\longleftarrow',
+            '↪':'\\hookrightarrow','↠':'\\twoheadrightarrow','⟹':'\\Longrightarrow','⟸':'\\Longleftarrow',
+            '⟺':'\\Longleftrightarrow','↻':'\\circlearrowright','↺':'\\circlearrowleft',
+            // Category Theory
+            '∘':'\\circ','⊗':'\\otimes','⊖':'\\ominus','⊙':'\\odot',
+            '†':'\\dagger','‡':'\\ddagger','⊣':'\\dashv','⋊':'\\rtimes','⋉':'\\ltimes','⋈':'\\bowtie',
+            // Brackets
+            '⟨':'\\langle','⟩':'\\rangle','‖':'\\|','⌈':'\\lceil','⌉':'\\rceil','⌊':'\\lfloor','⌋':'\\rfloor',
+            // Misc
+            '°':'\\degree','…':'\\ldots','⋯':'\\cdots','⋮':'\\vdots','⋱':'\\ddots',
+            '★':'\\bigstar','∠':'\\angle','∥':'\\parallel','∦':'\\nparallel',
+            '♯':'\\sharp','♭':'\\flat','♮':'\\natural'
+        };
+        
+        const COLORS = ['#e74c3c','#3498db','#2ecc71','#9b59b6','#f39c12','#1abc9c','#e91e63','#00bcd4'];
+        
+        let canvas, ctx;
+        let isDrawing = false;
+        let currentPath = [];
+        let drawnStrokes = []; // [{points: [], color: ''}]
+        let selectedSymbol = 'A';
+        let allData = {};
+        
+        window.onload = function() {
+            canvas = document.getElementById('drawCanvas');
+            ctx = canvas.getContext('2d');
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            canvas.addEventListener('mousedown', startDraw);
+            canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('mouseup', endDraw);
+            canvas.addEventListener('mouseleave', endDraw);
+            
+            canvas.addEventListener('touchstart', e => { e.preventDefault(); startDraw(getTouch(e)); });
+            canvas.addEventListener('touchmove', e => { e.preventDefault(); draw(getTouch(e)); });
+            canvas.addEventListener('touchend', e => { e.preventDefault(); endDraw(); });
+            
+            loadFromStorage();
+            buildSymbolGrid();
+            selectSymbol('A');
+        };
+        
+        function getTouch(e) {
+            const r = canvas.getBoundingClientRect();
+            return { offsetX: e.touches[0].clientX - r.left, offsetY: e.touches[0].clientY - r.top };
+        }
+        
+        function startDraw(e) {
+            isDrawing = true;
+            currentPath = [[e.offsetX / canvas.width, e.offsetY / canvas.height]];
+            ctx.strokeStyle = COLORS[drawnStrokes.length % COLORS.length];
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(e.offsetX, e.offsetY);
+        }
+        
+        function draw(e) {
+            if (!isDrawing) return;
+            currentPath.push([e.offsetX / canvas.width, e.offsetY / canvas.height]);
+            ctx.lineTo(e.offsetX, e.offsetY);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(e.offsetX, e.offsetY);
+        }
+        
+        function endDraw() {
+            if (!isDrawing) return;
+            isDrawing = false;
+            
+            if (currentPath.length >= 2) {
+                drawnStrokes.push({
+                    points: simplify(currentPath),
+                    color: COLORS[drawnStrokes.length % COLORS.length]
+                });
+                updateStrokeList();
+                setStatus(`stroke${drawnStrokes.length - 1} captured. Draw more or press Enter to save.`, 'success');
+            }
+            currentPath = [];
+        }
+        
+        function simplify(pts, tol = 0.006) {
+            if (pts.length <= 2) return pts.map(p => [r(p[0]), r(p[1])]);
+            let maxD = 0, maxI = 0;
+            const [ax, ay] = pts[0], [bx, by] = pts[pts.length-1];
+            for (let i = 1; i < pts.length - 1; i++) {
+                const [px, py] = pts[i];
+                const d = Math.abs((by-ay)*px - (bx-ax)*py + bx*ay - by*ax) / (Math.sqrt((by-ay)**2 + (bx-ax)**2) + 1e-10);
+                if (d > maxD) { maxD = d; maxI = i; }
+            }
+            if (maxD > tol) {
+                const L = simplify(pts.slice(0, maxI+1), tol);
+                const R = simplify(pts.slice(maxI), tol);
+                return L.slice(0,-1).concat(R);
+            }
+            return [[r(pts[0][0]), r(pts[0][1])], [r(pts[pts.length-1][0]), r(pts[pts.length-1][1])]];
+        }
+        
+        function r(n) { return Math.round(n * 1000) / 1000; }
+        
+        function saveStrokes() {
+            if (drawnStrokes.length === 0) {
+                setStatus('Draw something first!', 'warning');
+                return;
+            }
+            
+            // Calculate GLOBAL bounding box from ALL strokes combined
+            let gx0=Infinity, gy0=Infinity, gx1=-Infinity, gy1=-Infinity;
+            drawnStrokes.forEach(s => {
+                s.points.forEach(([x,y]) => {
+                    gx0=Math.min(gx0,x); gy0=Math.min(gy0,y);
+                    gx1=Math.max(gx1,x); gy1=Math.max(gy1,y);
+                });
+            });
+            const gw = gx1-gx0 || 0.001, gh = gy1-gy0 || 0.001;
+            
+            if (!allData[selectedSymbol]) {
+                allData[selectedSymbol] = { symbol: selectedSymbol, latex: LATEX[selectedSymbol] || selectedSymbol, strokes: {} };
+            }
+            
+            // Normalize each stroke relative to GLOBAL bounding box
+            drawnStrokes.forEach((stroke, i) => {
+                const key = `stroke${i}`;
+                
+                // Normalize points to global bbox (preserves relative positions)
+                const normalized = stroke.points.map(([x,y]) => [
+                    r((x - gx0) / gw),
+                    r((y - gy0) / gh)
+                ]);
+                
+                if (!allData[selectedSymbol].strokes[key]) {
+                    allData[selectedSymbol].strokes[key] = { variations: [] };
+                }
+                
+                allData[selectedSymbol].strokes[key].variations.push(normalized);
+            });
+            
+            saveToStorage();
+            const varNum = allData[selectedSymbol].strokes.stroke0?.variations.length || 1;
+            setStatus(`Saved variation #${varNum} for "${selectedSymbol}" (${drawnStrokes.length} strokes). Draw another!`, 'success');
+            
+            clearCanvas();
+            updateSaved();
+            updateJSON();
+            updateStats();
+        }
+        
+        function updateStrokeList() {
+            document.getElementById('strokeList').innerHTML = drawnStrokes.map((s, i) => `
+                <div class="stroke-chip">
+                    <div class="stroke-color" style="background:${s.color}"></div>
+                    stroke${i} (${s.points.length}pts)
+                </div>
+            `).join('');
+        }
+        
+        function clearCanvas() {
+            drawnStrokes = [];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            updateStrokeList();
+        }
+        
+        function undoStroke() {
+            if (drawnStrokes.length > 0) {
+                drawnStrokes.pop();
+                redraw();
+                updateStrokeList();
+            }
+        }
+        
+        function redraw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawnStrokes.forEach(s => {
+                ctx.strokeStyle = s.color;
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                s.points.forEach((p, j) => {
+                    j === 0 ? ctx.moveTo(p[0]*canvas.width, p[1]*canvas.height) : ctx.lineTo(p[0]*canvas.width, p[1]*canvas.height);
+                });
+                ctx.stroke();
+            });
+        }
+        
+        // Symbol descriptions for tooltips
+        const DESC = {
+            '○': 'Circle modifier (draw over ∫ → ∮ contour)',
+            '∫': 'Integral (+ ○ = contour integral)',
+            '∂': 'Partial derivative',
+            '∇': 'Nabla/gradient',
+            '∞': 'Infinity',
+            '∑': 'Summation',
+            '∏': 'Product',
+            '√': 'Square root (+ n above = nth root)',
+            '′': 'Prime/derivative (′′ = double prime)',
+            'π': 'Pi (3.14159...)',
+            'Π': 'Product operator (uppercase Pi)',
+            'Σ': 'Sum operator (uppercase Sigma)',
+            'α': 'Alpha', 'β': 'Beta', 'γ': 'Gamma', 'δ': 'Delta',
+            '∀': 'For all (universal)',
+            '∃': 'Exists',
+            '∈': 'Element of',
+            '⊂': 'Subset',
+            '∪': 'Union',
+            '∩': 'Intersection',
+            '→': 'Arrow/morphism',
+            '⇒': 'Implies/double arrow',
+            '↦': 'Maps to',
+            '↪': 'Injection/hook arrow',
+            '↠': 'Surjection',
+            '∘': 'Composition',
+            '⊗': 'Tensor product',
+            '⊕': 'Direct sum',
+            '≅': 'Isomorphism',
+            '⊣': 'Adjunction',
+            'ℕ': 'Natural numbers',
+            'ℤ': 'Integers',
+            'ℚ': 'Rationals',
+            'ℝ': 'Real numbers',
+            'ℂ': 'Complex numbers'
+        };
+        
+        function buildSymbolGrid() {
+            const cat = document.getElementById('symbolCategory').value;
+            const grid = document.getElementById('symbolGrid');
+            grid.innerHTML = '';
+            
+            SYMBOLS[cat].forEach(s => {
+                const btn = document.createElement('button');
+                btn.className = 'symbol-btn' + (s===selectedSymbol?' selected':'') + (allData[s]?' has-data':'');
+                btn.textContent = s;
+                btn.onclick = () => selectSymbol(s);
+                
+                const latex = LATEX[s] || s;
+                const desc = DESC[s] || '';
+                btn.title = desc ? `${s} → ${latex}\n${desc}` : `${s} → ${latex}`;
+                
+                grid.appendChild(btn);
+            });
+        }
+        
+        function selectSymbol(sym) {
+            selectedSymbol = sym;
+            document.getElementById('customSymbol').value = sym;
+            document.getElementById('currentSymLabel').textContent = sym;
+            clearCanvas();
+            buildSymbolGrid();
+            updateSaved();
+        }
+        
+        document.getElementById('customSymbol').addEventListener('change', e => { if(e.target.value) selectSymbol(e.target.value); });
+        
+        function updateSaved() {
+            const grid = document.getElementById('savedGrid');
+            const d = allData[selectedSymbol];
+            if (!d || Object.keys(d.strokes).length === 0) {
+                grid.innerHTML = '<div style="color:#666;font-size:11px;grid-column:1/-1;">No data yet</div>';
+                return;
+            }
+            grid.innerHTML = Object.entries(d.strokes).map(([k,v]) => `
+                <div class="saved-item"><div class="name">${k}</div><div class="count">${v.variations.length} vars</div></div>
+            `).join('');
+        }
+        
+        function updateJSON() {
+            document.getElementById('jsonOutput').value = JSON.stringify(allData, null, 2);
+        }
+        
+        function updateStats() {
+            let syms=0, vars=0, combos=0;
+            Object.values(allData).forEach(sym => {
+                syms++;
+                let c = 1;
+                Object.values(sym.strokes).forEach(s => { if(s.variations.length) c *= s.variations.length; });
+                vars += Object.values(sym.strokes).reduce((a,s) => a + s.variations.length, 0);
+                if (c > 1) combos += c;
+            });
+            document.getElementById('statSymbols').textContent = syms;
+            document.getElementById('statVariations').textContent = vars;
+            document.getElementById('statCombos').textContent = combos.toLocaleString();
+        }
+        
+        function downloadJSON() {
+            if (Object.keys(allData).length === 0) {
+                setStatus('Nothing saved yet! Draw and press Enter first.', 'warning');
+                return;
+            }
+            const blob = new Blob([JSON.stringify(allData, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'stroke_data.json';
+            a.click();
+            setStatus('Downloaded stroke_data.json ✓', 'success');
+        }
+        
+        function loadJSON() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.onchange = e => {
+                const reader = new FileReader();
+                reader.onload = evt => {
+                    try {
+                        allData = JSON.parse(evt.target.result);
+                        saveToStorage();
+                        buildSymbolGrid();
+                        updateSaved();
+                        updateJSON();
+                        updateStats();
+                        setStatus(`Loaded ${Object.keys(allData).length} symbols ✓`, 'success');
+                    } catch(err) { setStatus('Error: ' + err.message, 'warning'); }
+                };
+                reader.readAsText(e.target.files[0]);
+            };
+            input.click();
+        }
+        
+        function deleteSymbol() {
+            if (!allData[selectedSymbol]) {
+                setStatus('No data to delete for this symbol.', 'warning');
+                return;
+            }
+            if (confirm(`Delete all data for "${selectedSymbol}"?`)) {
+                delete allData[selectedSymbol];
+                saveToStorage();
+                buildSymbolGrid();
+                updateSaved();
+                updateJSON();
+                updateStats();
+                setStatus(`Deleted all data for "${selectedSymbol}".`, 'info');
+            }
+        }
+        
+        function saveToStorage() { localStorage.setItem('strokeData_v4', JSON.stringify(allData)); }
+        function loadFromStorage() {
+            try { allData = JSON.parse(localStorage.getItem('strokeData_v4')) || {}; } catch(e) { allData = {}; }
+            updateJSON();
+            updateStats();
+        }
+        
+        function setStatus(msg, type) {
+            const el = document.getElementById('status');
+            el.textContent = msg;
+            el.className = 'status ' + type;
+        }
+        
+        document.addEventListener('keydown', e => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            if (e.key === 'Enter') saveStrokes();
+            if (e.key.toLowerCase() === 'z') undoStroke();
+            if (e.key.toLowerCase() === 'c') clearCanvas();
+        });
+    </script>
+</body>
+</html>
