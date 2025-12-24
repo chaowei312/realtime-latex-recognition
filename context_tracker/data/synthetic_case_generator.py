@@ -35,6 +35,96 @@ from datetime import datetime
 
 
 # =============================================================================
+# Load Symbols from Config (Single Source of Truth)
+# =============================================================================
+
+def _load_vocabulary_symbols() -> Dict[str, List[str]]:
+    """
+    Load symbol categories from configs/vocabulary.json.
+    
+    Returns categorized symbols based on token ID ranges defined in the vocabulary.
+    """
+    config_path = Path(__file__).parent.parent / "configs" / "vocabulary.json"
+    
+    if not config_path.exists():
+        # Fallback if config not found
+        return {}
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        vocab = json.load(f)
+    
+    # Categorize by ID ranges (from vocabulary structure)
+    symbols = {
+        'greek_lower': [],
+        'greek_upper': [],
+        'operators': [],
+        'relations': [],
+        'functions': [],
+        'calculus': [],
+        'arrows': [],
+    }
+    
+    for token, idx in vocab.items():
+        if token.startswith('<'):  # Skip special tokens
+            continue
+        # Greek lowercase: 82-105
+        if 82 <= idx <= 105 and token.startswith('\\'):
+            symbols['greek_lower'].append(token)
+        # Greek uppercase + variants: 106-119
+        elif 106 <= idx <= 119 and token.startswith('\\'):
+            symbols['greek_upper'].append(token)
+        # Operators: 120-149
+        elif 120 <= idx <= 149:
+            symbols['operators'].append(token)
+        # Relations: 150-189
+        elif 150 <= idx <= 189:
+            symbols['relations'].append(token)
+        # Functions: 320-349
+        elif 320 <= idx <= 349 and token.startswith('\\'):
+            symbols['functions'].append(token)
+        # Calculus: 240-279
+        elif 240 <= idx <= 279:
+            symbols['calculus'].append(token)
+        # Arrows: 280-319
+        elif 280 <= idx <= 319 and token.startswith('\\'):
+            symbols['arrows'].append(token)
+    
+    return symbols
+
+
+def _load_confusion_groups() -> Dict[str, Dict]:
+    """Load symbol confusion groups from config."""
+    config_path = Path(__file__).parent.parent / "configs" / "symbol_confusion_groups.json"
+    
+    if not config_path.exists():
+        return {}
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+# Cache loaded symbols
+_VOCAB_SYMBOLS = None
+_CONFUSION_GROUPS = None
+
+
+def get_vocab_symbols() -> Dict[str, List[str]]:
+    """Get cached vocabulary symbols."""
+    global _VOCAB_SYMBOLS
+    if _VOCAB_SYMBOLS is None:
+        _VOCAB_SYMBOLS = _load_vocabulary_symbols()
+    return _VOCAB_SYMBOLS
+
+
+def get_confusion_groups() -> Dict[str, Dict]:
+    """Get cached confusion groups."""
+    global _CONFUSION_GROUPS
+    if _CONFUSION_GROUPS is None:
+        _CONFUSION_GROUPS = _load_confusion_groups()
+    return _CONFUSION_GROUPS
+
+
+# =============================================================================
 # Expression Tree Depth & Complexity Analysis
 # =============================================================================
 
@@ -350,45 +440,59 @@ class ExpressionBuilder:
     # Default atomic symbols (depth 0) - comprehensive list
     DEFAULT_VARIABLES = list('xyzabcdefghijklmnopqrstuvw')
     DEFAULT_DIGITS = list('0123456789')
-    DEFAULT_GREEK_LOWER = [
-        '\\alpha', '\\beta', '\\gamma', '\\delta', '\\epsilon', '\\zeta',
-        '\\eta', '\\theta', '\\iota', '\\kappa', '\\lambda', '\\mu',
-        '\\nu', '\\xi', '\\pi', '\\rho', '\\sigma', '\\tau',
-        '\\upsilon', '\\phi', '\\chi', '\\psi', '\\omega'
-    ]
-    DEFAULT_GREEK_UPPER = [
-        '\\Gamma', '\\Delta', '\\Theta', '\\Lambda', '\\Xi', 
-        '\\Pi', '\\Sigma', '\\Upsilon', '\\Phi', '\\Psi', '\\Omega'
-    ]
     DEFAULT_CONSTANTS = ['0', '1', '2', '3', 'e', '\\pi', '\\infty', 'n', 'N']
     
-    # Binary operators
-    BINARY_OPS = ['+', '-', '\\cdot', '\\times', '\\pm', '\\mp', '\\div']
-    RELATIONS = ['=', '\\neq', '\\leq', '\\geq', '<', '>', '\\approx', '\\equiv', '\\sim']
+    @classmethod
+    def _get_greek_lower(cls) -> List[str]:
+        """Get lowercase Greek letters from config."""
+        vocab = get_vocab_symbols()
+        return vocab.get('greek_lower', [
+            '\\alpha', '\\beta', '\\gamma', '\\delta', '\\epsilon', '\\zeta',
+            '\\eta', '\\theta', '\\iota', '\\kappa', '\\lambda', '\\mu',
+            '\\nu', '\\xi', '\\pi', '\\rho', '\\sigma', '\\tau',
+            '\\upsilon', '\\phi', '\\chi', '\\psi', '\\omega'
+        ])
+    
+    @classmethod
+    def _get_greek_upper(cls) -> List[str]:
+        """Get uppercase Greek letters from config."""
+        vocab = get_vocab_symbols()
+        return vocab.get('greek_upper', [
+            '\\Gamma', '\\Delta', '\\Theta', '\\Lambda', '\\Xi', 
+            '\\Pi', '\\Sigma', '\\Upsilon', '\\Phi', '\\Psi', '\\Omega'
+        ])
+    
+    @classmethod
+    def _get_binary_ops(cls) -> List[str]:
+        """Get binary operators from config."""
+        vocab = get_vocab_symbols()
+        ops = vocab.get('operators', [])
+        # Filter to common binary operators
+        binary = ['+', '-', '\\cdot', '\\times', '\\pm', '\\mp', '\\div']
+        return [op for op in binary if op in ops] or binary
+    
+    @classmethod
+    def _get_relations(cls) -> List[str]:
+        """Get relation symbols from config."""
+        vocab = get_vocab_symbols()
+        relations = vocab.get('relations', [])
+        common = ['=', '\\neq', '\\leq', '\\geq', '<', '>', '\\approx', '\\equiv', '\\sim']
+        return [r for r in common if r in relations] or common
+    
+    @classmethod
+    def _get_functions(cls) -> List[str]:
+        """Get function symbols from config."""
+        vocab = get_vocab_symbols()
+        funcs = vocab.get('functions', [])
+        common = [
+            '\\sin', '\\cos', '\\tan', '\\cot', '\\sec', '\\csc',
+            '\\log', '\\ln', '\\exp', '\\arcsin', '\\arccos', '\\arctan',
+            '\\sinh', '\\cosh', '\\tanh', '\\det', '\\dim', '\\ker'
+        ]
+        return [f for f in common if f in funcs] or common
+    
+    # Set operations (static - rarely in vocabulary)
     SET_OPS = ['\\cup', '\\cap', '\\subset', '\\supset', '\\in', '\\setminus']
-    
-    # Functions that take arguments
-    FUNCTIONS = [
-        '\\sin', '\\cos', '\\tan', '\\cot', '\\sec', '\\csc',
-        '\\log', '\\ln', '\\exp', '\\arcsin', '\\arccos', '\\arctan',
-        '\\sinh', '\\cosh', '\\tanh', '\\det', '\\dim', '\\ker'
-    ]
-    
-    # Stroke-available symbol mapping (LaTeX -> Unicode for validation)
-    LATEX_TO_UNICODE = {
-        '\\alpha': 'α', '\\beta': 'β', '\\gamma': 'γ', '\\delta': 'δ',
-        '\\epsilon': 'ε', '\\zeta': 'ζ', '\\eta': 'η', '\\theta': 'θ',
-        '\\iota': 'ι', '\\kappa': 'κ', '\\lambda': 'λ', '\\mu': 'μ',
-        '\\nu': 'ν', '\\xi': 'ξ', '\\pi': 'π', '\\rho': 'ρ',
-        '\\sigma': 'σ', '\\tau': 'τ', '\\upsilon': 'υ', '\\phi': 'φ',
-        '\\chi': 'χ', '\\psi': 'ψ', '\\omega': 'ω',
-        '\\Gamma': 'Γ', '\\Delta': 'Δ', '\\Theta': 'Θ', '\\Lambda': 'Λ',
-        '\\Xi': 'Ξ', '\\Pi': 'Π', '\\Sigma': 'Σ', '\\Phi': 'Φ',
-        '\\Psi': 'Ψ', '\\Omega': 'Ω',
-        '\\sum': '∑', '\\prod': '∏', '\\int': '∫', '\\infty': '∞',
-        '\\partial': '∂', '\\nabla': '∇', '\\forall': '∀', '\\exists': '∃',
-        '\\emptyset': '∅', '\\neg': '¬', '\\wedge': '∧', '\\vee': '∨',
-    }
     
     def __init__(self, seed: int = None, use_stroke_vocab: bool = False, 
                  custom_symbols: List[str] = None):
@@ -406,6 +510,11 @@ class ExpressionBuilder:
         self.use_stroke_vocab = use_stroke_vocab
         self._stroke_symbols = None
         
+        # Load symbols from config
+        self.BINARY_OPS = self._get_binary_ops()
+        self.RELATIONS = self._get_relations()
+        self.FUNCTIONS = self._get_functions()
+        
         # Initialize symbol lists
         if custom_symbols:
             self.VARIABLES = [s for s in custom_symbols if len(s) == 1 and s.isalpha()]
@@ -416,8 +525,8 @@ class ExpressionBuilder:
         else:
             self.VARIABLES = self.DEFAULT_VARIABLES.copy()
             self.DIGITS = self.DEFAULT_DIGITS.copy()
-            self.GREEK_LOWER = self.DEFAULT_GREEK_LOWER.copy()
-            self.GREEK_UPPER = self.DEFAULT_GREEK_UPPER.copy()
+            self.GREEK_LOWER = self._get_greek_lower()
+            self.GREEK_UPPER = self._get_greek_upper()
             self.CONSTANTS = self.DEFAULT_CONSTANTS.copy()
         
         # Filter to stroke-available if requested
@@ -443,20 +552,30 @@ class ExpressionBuilder:
         """Filter symbol lists to only include stroke-available symbols."""
         stroke_syms = self._get_stroke_symbols()
         
+        # Load confusion groups for Unicode mapping
+        confusion_groups = get_confusion_groups()
+        latex_to_unicode = {}
+        for group_name, group_data in confusion_groups.items():
+            if 'symbols' in group_data:
+                for sym in group_data['symbols']:
+                    # Extract LaTeX and Unicode from group if available
+                    if isinstance(sym, dict) and 'latex' in sym and 'unicode' in sym:
+                        latex_to_unicode[sym['latex']] = sym['unicode']
+        
         # Filter variables and digits
         self.VARIABLES = [v for v in self.VARIABLES if v in stroke_syms]
         self.DIGITS = [d for d in self.DIGITS if d in stroke_syms]
         
         # Filter Greek by checking Unicode mapping
         self.GREEK_LOWER = [g for g in self.GREEK_LOWER 
-                           if self.LATEX_TO_UNICODE.get(g, '') in stroke_syms]
+                           if latex_to_unicode.get(g, '') in stroke_syms or g in stroke_syms]
         self.GREEK_UPPER = [g for g in self.GREEK_UPPER 
-                           if self.LATEX_TO_UNICODE.get(g, '') in stroke_syms]
+                           if latex_to_unicode.get(g, '') in stroke_syms or g in stroke_syms]
         
         # Update constants
         self.CONSTANTS = [c for c in self.CONSTANTS 
                          if c in stroke_syms or c in self.DIGITS or 
-                         self.LATEX_TO_UNICODE.get(c, '') in stroke_syms]
+                         latex_to_unicode.get(c, '') in stroke_syms]
     
     def _generate_atomics(self, count: int = 50) -> List[str]:
         """Generate depth-0 atomic expressions."""
