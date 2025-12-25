@@ -61,13 +61,10 @@ from context_tracker.model.module import (
 
 class StrokeLineDataset(Dataset):
     """
-    Dataset for line-level stroke recognition.
+    Dataset for line-level stroke recognition using PRE-COMPUTED stroke data.
     
-    Each sample contains:
-    - Multiple strokes forming a text line (or word)
-    - Ground truth text
-    
-    We simulate this by grouping individual stroke-letter samples.
+    Uses actual stroke trajectories from IAM-OnDB or similar datasets.
+    Fast loading - no on-the-fly stroke generation!
     """
     
     def __init__(
@@ -79,17 +76,13 @@ class StrokeLineDataset(Dataset):
         max_text_len: int = 50,
         canvas_size: Tuple[int, int] = (128, 512),
         patch_size: int = 16,
-        sample_interval: int = 8,
+        sample_interval: int = 4,  # Sample every N points along trajectory
     ):
         self.max_strokes = max_strokes
         self.max_text_len = max_text_len
         self.canvas_size = canvas_size
         self.patch_size = patch_size
         self.sample_interval = sample_interval
-        
-        # Load line data (for text targets)
-        with open(line_data_path, 'r') as f:
-            self.line_data = json.load(f)
         
         # Load vocabulary
         with open(vocab_path, 'r') as f:
@@ -103,182 +96,193 @@ class StrokeLineDataset(Dataset):
         self.bos_id = self.vocab.get('<BOS>', 1)
         self.eos_id = self.vocab.get('<EOS>', 2)
         
-        # Try to load stroke data (optional - will synthesize if not available)
-        self.stroke_data = None
-        if stroke_data_path and Path(stroke_data_path).exists():
+        # Load stroke data from pickle (FAST!)
+        stroke_pkl = stroke_data_path.replace('.json', '.pkl')
+        if Path(stroke_pkl).exists():
+            with open(stroke_pkl, 'rb') as f:
+                stroke_list = pickle.load(f)
+        else:
+            # Fallback to json
             with open(stroke_data_path, 'r') as f:
-                self.stroke_data = json.load(f)
+                stroke_list = json.load(f)
+        
+        # Group strokes by line_id
+        from collections import defaultdict
+        strokes_by_line = defaultdict(list)
+        for s in stroke_list:
+            strokes_by_line[s['line_id']].append(s)
+        
+        # Sort strokes within each line by stroke_index
+        for line_id in strokes_by_line:
+            strokes_by_line[line_id].sort(key=lambda x: x['stroke_index'])
+        
+        # Build dataset: one sample per line
+        self.samples = []
+        for line_id, strokes in strokes_by_line.items():
+            text = ''.join(s['letter'] for s in strokes)
+            if len(text) >= 2:  # Skip single-char lines
+                self.samples.append({
+                    'line_id': line_id,
+                    'strokes': strokes,
+                    'text': text,
+                })
+        
+        print(f"Loaded {len(self.samples)} lines with {sum(len(s['strokes']) for s in self.samples)} total strokes")
+        
+        # Pre-render all canvases and extract patches for speed
+        self._precompute_all()
+    
+    def _precompute_all(self):
+        """Pre-compute canvases and patches for all samples."""
+        print("Pre-computing patches...")
+        self.precomputed = []
+        
+        for sample in self.samples:
+            # Render and extract patches
+            canvas = self._render_strokes_fast(sample['strokes'])
+            patches, stroke_ids = self._extract_all_patches(sample['strokes'], canvas)
+            
+            self.precomputed.append({
+                'patches': patches,
+                'stroke_ids': stroke_ids,
+            })
+        
+        print(f"Pre-computed {len(self.precomputed)} samples")
+    
+    def _render_strokes_fast(self, strokes: List[Dict]) -> torch.Tensor:
+        """Render strokes to canvas using normalized coordinates."""
+        H, W = self.canvas_size
+        canvas = torch.ones(1, H, W)  # White background
+        
+        # Layout: position each stroke horizontally
+        x_offset = 10
+        char_spacing = 20
+        
+        for stroke_data in strokes:
+            points = stroke_data['stroke_points_normalized']
+            w, h = stroke_data['width'], stroke_data['height']
+            
+            # Scale normalized points to canvas
+            scale_x = min(char_spacing, 30)
+            scale_y = min(H * 0.6, 80)
+            y_center = H // 2
+            
+            for i in range(len(points) - 1):
+                x0 = int(x_offset + points[i][0] * scale_x)
+                y0 = int(y_center + (points[i][1] - 0.5) * scale_y)
+                x1 = int(x_offset + points[i+1][0] * scale_x)
+                y1 = int(y_center + (points[i+1][1] - 0.5) * scale_y)
+                
+                # Draw line with thickness
+                self._draw_line(canvas, x0, y0, x1, y1)
+            
+            x_offset += char_spacing
+            if x_offset > W - 20:
+                break
+        
+        return canvas
+    
+    def _draw_line(self, canvas: torch.Tensor, x0: int, y0: int, x1: int, y1: int):
+        """Draw anti-aliased line on canvas."""
+        H, W = canvas.shape[1], canvas.shape[2]
+        num_steps = max(int(abs(x1 - x0) + abs(y1 - y0)), 1)
+        
+        for t in range(num_steps + 1):
+            px = int(x0 + (x1 - x0) * t / num_steps)
+            py = int(y0 + (y1 - y0) * t / num_steps)
+            
+            # Draw with thickness 2
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    nx, ny = px + dx, py + dy
+                    if 0 <= nx < W and 0 <= ny < H:
+                        canvas[0, ny, nx] = 0.0  # Black ink
+    
+    def _extract_all_patches(
+        self, 
+        strokes: List[Dict], 
+        canvas: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Extract patches along all stroke trajectories."""
+        H, W = self.canvas_size
+        half = self.patch_size // 2
+        
+        all_patches = []
+        all_stroke_ids = []
+        
+        x_offset = 10
+        char_spacing = 20
+        y_center = H // 2
+        scale_x = min(char_spacing, 30)
+        scale_y = min(H * 0.6, 80)
+        
+        for stroke_idx, stroke_data in enumerate(strokes):
+            points = stroke_data['stroke_points_normalized']
+            
+            # Sample points along trajectory
+            for i in range(0, len(points), self.sample_interval):
+                px = int(x_offset + points[i][0] * scale_x)
+                py = int(y_center + (points[i][1] - 0.5) * scale_y)
+                
+                # Extract patch
+                x1 = max(0, px - half)
+                y1 = max(0, py - half)
+                x2 = min(W, px + half)
+                y2 = min(H, py + half)
+                
+                patch = canvas[:, y1:y2, x1:x2].clone()
+                
+                # Pad if necessary
+                if patch.shape[1] != self.patch_size or patch.shape[2] != self.patch_size:
+                    padded = torch.ones(1, self.patch_size, self.patch_size)
+                    padded[:, :patch.shape[1], :patch.shape[2]] = patch
+                    patch = padded
+                
+                all_patches.append(patch)
+                all_stroke_ids.append(stroke_idx)
+            
+            x_offset += char_spacing
+            if x_offset > W - 20:
+                break
+        
+        if not all_patches:
+            return torch.ones(1, 1, self.patch_size, self.patch_size), torch.zeros(1, dtype=torch.long)
+        
+        return torch.stack(all_patches), torch.tensor(all_stroke_ids, dtype=torch.long)
     
     def __len__(self) -> int:
-        return len(self.line_data)
+        return len(self.samples)
     
     def __getitem__(self, idx: int) -> Dict:
-        line = self.line_data[idx]
-        text = line['text']
+        sample = self.samples[idx]
+        precomp = self.precomputed[idx]
         
-        # Generate synthetic strokes for this text
-        strokes = self._generate_strokes_for_text(text)
-        
-        # Render strokes to canvas
-        canvas = self._render_strokes_to_canvas(strokes)
-        
-        # Extract trajectory patches
-        all_patches = []
-        stroke_ids = []
-        
-        for stroke_idx, stroke in enumerate(strokes):
-            patches = self._extract_trajectory_patches(stroke, canvas)
-            all_patches.extend(patches)
-            stroke_ids.extend([stroke_idx] * len(patches))
-        
-        # Convert to tensors
-        if all_patches:
-            patches_tensor = torch.stack(all_patches)
-        else:
-            patches_tensor = torch.zeros(1, 1, self.patch_size, self.patch_size)
+        patches = precomp['patches']
+        stroke_ids = precomp['stroke_ids']
+        text = sample['text']
         
         # Tokenize text
         input_ids, target_ids = self._tokenize_text(text)
         
         return {
-            'patches': patches_tensor,  # (num_patches, 1, H, W)
-            'stroke_ids': torch.tensor(stroke_ids, dtype=torch.long),
-            'num_patches': len(all_patches),
-            'num_strokes': len(strokes),
-            'input_ids': input_ids,  # (max_len,) with BOS
-            'target_ids': target_ids,  # (max_len,) with EOS
+            'patches': patches,  # (num_patches, 1, H, W)
+            'stroke_ids': stroke_ids,
+            'num_patches': patches.shape[0],
+            'num_strokes': len(sample['strokes']),
+            'input_ids': input_ids,
+            'target_ids': target_ids,
             'text': text,
             'text_len': len(text),
         }
     
-    def _generate_strokes_for_text(self, text: str) -> List[List[Tuple[float, float, float]]]:
-        """
-        Generate synthetic stroke trajectories for text.
-        
-        Each character becomes a stroke with points along a path.
-        """
-        strokes = []
-        x_offset = 20
-        char_width = 20
-        char_height = 40
-        y_base = self.canvas_size[0] // 2
-        
-        for i, char in enumerate(text):
-            if char == ' ':
-                x_offset += char_width // 2
-                continue
-            
-            # Generate stroke points for this character
-            x_start = x_offset + i * char_width
-            stroke = self._generate_char_stroke(char, x_start, y_base, char_width, char_height)
-            strokes.append(stroke)
-            
-            if len(strokes) >= self.max_strokes:
-                break
-        
-        return strokes
-    
-    def _generate_char_stroke(
-        self, 
-        char: str, 
-        x: float, 
-        y: float, 
-        w: float, 
-        h: float
-    ) -> List[Tuple[float, float, float]]:
-        """Generate a simple stroke pattern for a character."""
-        points = []
-        num_points = 20
-        
-        # Simple zigzag pattern (varies by character hash)
-        seed = ord(char)
-        np.random.seed(seed)
-        
-        for i in range(num_points):
-            t = i / (num_points - 1)
-            px = x + t * w + np.random.normal(0, 2)
-            py = y + np.sin(t * np.pi * 2) * h * 0.3 + np.random.normal(0, 2)
-            pt = i * 0.01  # Time
-            points.append((px, py, pt))
-        
-        np.random.seed(None)  # Reset
-        return points
-    
-    def _render_strokes_to_canvas(
-        self, 
-        strokes: List[List[Tuple[float, float, float]]]
-    ) -> torch.Tensor:
-        """Render all strokes to a canvas image."""
-        H, W = self.canvas_size
-        canvas = torch.ones(1, H, W)  # White background
-        
-        for stroke in strokes:
-            for i in range(len(stroke) - 1):
-                x0, y0, _ = stroke[i]
-                x1, y1, _ = stroke[i + 1]
-                
-                # Draw line segment
-                num_steps = max(int(abs(x1 - x0) + abs(y1 - y0)), 1)
-                for t in range(num_steps + 1):
-                    px = int(x0 + (x1 - x0) * t / num_steps)
-                    py = int(y0 + (y1 - y0) * t / num_steps)
-                    
-                    if 0 <= px < W and 0 <= py < H:
-                        # Draw with thickness
-                        for dx in [-1, 0, 1]:
-                            for dy in [-1, 0, 1]:
-                                nx, ny = px + dx, py + dy
-                                if 0 <= nx < W and 0 <= ny < H:
-                                    canvas[0, ny, nx] = 0.0  # Black ink
-        
-        return canvas
-    
-    def _extract_trajectory_patches(
-        self,
-        stroke: List[Tuple[float, float, float]],
-        canvas: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """Extract patches along stroke trajectory."""
-        patches = []
-        half = self.patch_size // 2
-        C, H, W = canvas.shape
-        
-        for i in range(0, len(stroke), self.sample_interval):
-            x, y, _ = stroke[i]
-            x, y = int(x), int(y)
-            
-            # Extract patch centered at (x, y)
-            x1 = max(0, x - half)
-            y1 = max(0, y - half)
-            x2 = min(W, x + half)
-            y2 = min(H, y + half)
-            
-            patch = canvas[:, y1:y2, x1:x2]
-            
-            # Pad if necessary
-            if patch.shape[1] != self.patch_size or patch.shape[2] != self.patch_size:
-                padded = torch.ones(C, self.patch_size, self.patch_size)
-                ph, pw = patch.shape[1], patch.shape[2]
-                padded[:, :ph, :pw] = patch
-                patch = padded
-            
-            patches.append(patch)
-        
-        return patches
-    
     def _tokenize_text(self, text: str) -> Tuple[torch.Tensor, torch.Tensor]:
         """Tokenize text to input/target sequences."""
-        # Convert to indices
         indices = [self.vocab.get(c, self.vocab.get('<UNK>', 0)) for c in text]
+        indices = indices[:self.max_text_len - 2]
         
-        # Truncate if needed
-        indices = indices[:self.max_text_len - 2]  # Leave room for BOS/EOS
-        
-        # Create input (with BOS) and target (with EOS)
         input_ids = [self.bos_id] + indices
         target_ids = indices + [self.eos_id]
         
-        # Pad to max length
         input_ids = input_ids + [self.pad_id] * (self.max_text_len - len(input_ids))
         target_ids = target_ids + [self.pad_id] * (self.max_text_len - len(target_ids))
         
@@ -736,9 +740,9 @@ class ProgressDisplay:
             
             status_color = {
                 "pending": "",
-                "training": "→ ",
-                "completed": "✓ ",
-                "error": "✗ ",
+                "training": ">> ",
+                "completed": "[OK] ",
+                "error": "[X] ",
             }.get(p.status, "")
             
             print(f"{variant:<25} {status_color + p.status:<10} {epoch_str:<12} "
@@ -884,27 +888,27 @@ def run_parallel_training(args, variants: List[str]):
     line_dir = data_dir / "line_text_dataset"
     stroke_dir = data_dir / "stroke_letter_dataset"
     
-    # Load vocabulary
-    vocab_path = line_dir / "vocabulary.json"
-    with open(vocab_path, 'r') as f:
+    # Load vocabulary from stroke dataset
+    stroke_vocab_path = stroke_dir / "vocabulary.json"
+    with open(stroke_vocab_path, 'r') as f:
         vocab = json.load(f)
     
     vocab_size = len(vocab)
     print(f"\nVocabulary size: {vocab_size}")
     
-    # Create datasets (shared across all variants)
+    # Create datasets (shared across all variants, patches pre-computed)
     train_dataset = StrokeLineDataset(
-        stroke_data_path=str(stroke_dir / "stroke_letter_train.json") if stroke_dir.exists() else None,
+        stroke_data_path=str(stroke_dir / "stroke_letter_train.json"),
         line_data_path=str(line_dir / "train.json"),
-        vocab_path=str(vocab_path),
+        vocab_path=str(stroke_vocab_path),
         max_strokes=20,
         max_text_len=80,
     )
     
     val_dataset = StrokeLineDataset(
-        stroke_data_path=str(stroke_dir / "stroke_letter_val.json") if stroke_dir.exists() else None,
+        stroke_data_path=str(stroke_dir / "stroke_letter_val.json"),
         line_data_path=str(line_dir / "val.json"),
-        vocab_path=str(vocab_path),
+        vocab_path=str(stroke_vocab_path),
         max_strokes=20,
         max_text_len=80,
     )
@@ -996,7 +1000,7 @@ def run_parallel_training(args, variants: List[str]):
     completed = [r for r in results if r['status'] == 'completed']
     if completed:
         best = min(completed, key=lambda x: x['best_cer'])
-        print(f"\n🏆 Best variant: {best['variant']} (CER: {best['best_cer']:.4f})")
+        print(f"\n** Best variant: {best['variant']} (CER: {best['best_cer']:.4f})")
     
     # Save results
     output_file = Path(__file__).parent / "parallel_training_results.json"
@@ -1029,7 +1033,7 @@ def run_sequential_high_throughput(args, variants: List[str]):
             suggested_batch = 64
         
         if args.batch_size < suggested_batch:
-            print(f"💡 Tip: Your GPU has {mem_gb:.0f}GB, consider --batch-size {suggested_batch}")
+            print(f"Tip: Your GPU has {mem_gb:.0f}GB, consider --batch-size {suggested_batch}")
     
     print(f"\nSequential training of {len(variants)} variants:")
     
@@ -1083,24 +1087,26 @@ def train_single_variant(args, variant: str) -> Dict:
     bos_id = vocab.get('<BOS>', 1)
     eos_id = vocab.get('<EOS>', 2)
     
-    # Create datasets
+    # Create datasets using stroke letter data (with pre-computed patches)
+    stroke_vocab_path = stroke_dir / "vocabulary.json"
+    
     train_dataset = StrokeLineDataset(
-        stroke_data_path=str(stroke_dir / "stroke_letter_train.json") if stroke_dir.exists() else None,
+        stroke_data_path=str(stroke_dir / "stroke_letter_train.json"),
         line_data_path=str(line_dir / "train.json"),
-        vocab_path=str(vocab_path),
+        vocab_path=str(stroke_vocab_path),
         max_strokes=20,
         max_text_len=80,
     )
     
     val_dataset = StrokeLineDataset(
-        stroke_data_path=str(stroke_dir / "stroke_letter_val.json") if stroke_dir.exists() else None,
+        stroke_data_path=str(stroke_dir / "stroke_letter_val.json"),
         line_data_path=str(line_dir / "val.json"),
-        vocab_path=str(vocab_path),
+        vocab_path=str(stroke_vocab_path),
         max_strokes=20,
         max_text_len=80,
     )
     
-    # Create dataloaders with larger batch size
+    # Create dataloaders (fast since patches are pre-computed)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -1136,13 +1142,8 @@ def train_single_variant(args, variant: str) -> Dict:
     # Enable CUDA optimizations
     if device == "cuda":
         torch.backends.cudnn.benchmark = True
-        # Compile model for faster training (PyTorch 2.0+)
-        if hasattr(torch, 'compile'):
-            try:
-                model = torch.compile(model, mode='reduce-overhead')
-                print("✓ Model compiled with torch.compile()")
-            except Exception:
-                pass
+        torch.set_float32_matmul_precision('high')  # Use TF32 for faster matmul
+        # Note: torch.compile() disabled due to Triton issues on RTX 5090 (Blackwell)
     
     encoder_config = model.patch_encoder.get_config_summary()
     total_params = sum(p.numel() for p in model.parameters())
@@ -1168,7 +1169,7 @@ def train_single_variant(args, variant: str) -> Dict:
         
         if val_cer < best_cer:
             best_cer = val_cer
-            marker = " ← best"
+            marker = " <- best"
         else:
             marker = ""
         
