@@ -208,12 +208,17 @@ def render_strokes_to_array(
     )
 
 
-def compose_context_with_diagram(seed: int = 42) -> dict:
+def compose_context_with_diagram(seed: int = 42, rich_context: bool = True) -> dict:
     """
     Compose a context that includes:
-    - At least one commutative diagram
-    - Additional atomic LaTeX expressions
+    - Multiple atomic LaTeX expressions (separated by ",")
+    - Matrices
+    - Commutative diagram (no comma - special structure)
     - Edit target info
+    
+    Args:
+        seed: Random seed
+        rich_context: If True, generate richer context like comp_007 example
     """
     random.seed(seed)
     
@@ -221,18 +226,45 @@ def compose_context_with_diagram(seed: int = 42) -> dict:
     diagrams = generate_commutative_diagrams(count=3, complexity_range=(2, 3), seed=seed)
     cases = generate_atomic_cases(min_depth=1, max_depth=3, count=5, seed=seed)
     
-    # Pick one diagram and one atomic case
+    # Pick one diagram and multiple atomic cases
     diagram = diagrams[0]
     atomic = random.choice(cases[:3])
     
-    # Compose context (no "," - these are all atomic, just space separated for display)
-    context_parts = [
-        atomic.before_latex,
-        diagram['latex'],
-    ]
-    
-    # Full context
-    full_context = " \\quad ".join(context_parts)
+    if rich_context:
+        # Rich context like comp_007: multiple expressions with commas, matrices, diagram
+        # Generate some matrix expressions
+        matrix_vars = ['y', 'd', 'c', 'μ', 'g', 'k', 'a', 'b']
+        random.shuffle(matrix_vars)
+        matrix1 = f"\\begin{{pmatrix}} {matrix_vars[0]} & {matrix_vars[1]} \\\\ {matrix_vars[2]} & {matrix_vars[3]} \\end{{pmatrix}}"
+        matrix2 = f"\\begin{{pmatrix}} {matrix_vars[4]} & {matrix_vars[5]} \\\\ {matrix_vars[6]} & {matrix_vars[7]} \\end{{pmatrix}}"
+        
+        # Generate a limit expression or similar
+        limit_exprs = [
+            r"\lim_{u \to 0} \frac{\sin(u)}{u}",
+            r"\lim_{x \to \infty} \frac{1}{x}",
+            r"\sum_{i=1}^{n} x_i",
+            r"\int_0^1 f(x) dx",
+        ]
+        limit_expr = random.choice(limit_exprs)
+        
+        # Simple variables
+        simple_vars = ['v', 'w', 'z', 'u']
+        simple_var = random.choice(simple_vars)
+        
+        # Compose: atomic expressions with "," separator, then matrices (no comma), then diagram
+        atomic_parts = [limit_expr, matrix1, matrix2, simple_var]
+        math_context = " \\quad ".join(atomic_parts)  # Matrices don't need comma
+        
+        # Diagram added separately (no comma before diagram)
+        context_parts = [math_context, diagram['latex']]
+        full_context = " \\quad ".join(context_parts)
+    else:
+        # Simple context: one atomic + one diagram
+        context_parts = [
+            atomic.before_latex,
+            diagram['latex'],
+        ]
+        full_context = " \\quad ".join(context_parts)
     
     # Edit info - get actual symbol from metadata (NOT string diff which includes LaTeX syntax)
     edit_target = None
