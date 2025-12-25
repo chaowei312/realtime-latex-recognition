@@ -4,6 +4,186 @@
 
 ---
 
+## 0. Motivation & Design Intent
+
+### Why This Architecture?
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         THE PROBLEM WITH EXISTING APPROACHES                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  TRADITIONAL VLM (Frame-wise Full Self-Attention)                               │
+│  ════════════════════════════════════════════════                               │
+│                                                                                  │
+│   Frame 1        Frame 2        Frame 3        Frame N                          │
+│  ┌───────┐      ┌───────┐      ┌───────┐      ┌───────┐                        │
+│  │ image │      │ image │      │ image │      │ image │                        │
+│  │ patch │      │ patch │      │ patch │      │ patch │                        │
+│  │ tokens│      │ tokens│      │ tokens│      │ tokens│                        │
+│  └───┬───┘      └───┬───┘      └───┬───┘      └───┬───┘                        │
+│      │              │              │              │                             │
+│      └──────────────┴──────────────┴──────────────┘                             │
+│                          │                                                       │
+│                          ▼                                                       │
+│              ┌─────────────────────────┐                                        │
+│              │  FULL SELF-ATTENTION    │   O(N² × P²) per inference            │
+│              │  ALL patches × ALL time │   Memory: O(N × P) patches            │
+│              └─────────────────────────┘   Latency: grows with history         │
+│                          │                                                       │
+│                          ▼                                                       │
+│              ┌─────────────────────────┐                                        │
+│              │     Single output       │   No edit operations                   │
+│              │  (full re-recognition)  │   No reasoning trajectory             │
+│              └─────────────────────────┘   No incremental updates              │
+│                                                                                  │
+│  PROBLEMS:                                                                       │
+│  ✗ Quadratic cost: every new stroke reprocesses ALL visual history             │
+│  ✗ No knowledge accumulation: treats each frame independently                  │
+│  ✗ No trajectory: only captures WHAT was written, not HOW                      │
+│  ✗ Edit = full re-inference: no efficient REPLACE/INSERT                       │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                         OUR SOLUTION: CONTEXT TRACKER                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  KEY INSIGHT: "Snowball" recognized symbols into TEXT, discard visual history  │
+│  ════════════════════════════════════════════════════════════════════════════   │
+│                                                                                  │
+│   Stroke 1       Stroke 2       Stroke 3       Stroke N                         │
+│  ┌───────┐      ┌───────┐      ┌───────┐      ┌───────┐                        │
+│  │patches│      │patches│      │patches│      │patches│   Current stroke       │
+│  └───┬───┘      └───┬───┘      └───┬───┘      └───┬───┘   (visual)             │
+│      │              │              │              │                             │
+│      ▼              ▼              ▼              ▼                             │
+│  ┌───────┐      ┌───────┐      ┌───────┐      ┌───────┐                        │
+│  │ [CLS] │      │ [CLS] │      │ [CLS] │      │ [CLS] │   Local recognition    │
+│  └───┬───┘      └───┬───┘      └───┬───┘      └───┬───┘                        │
+│      │              │              │              │                             │
+│      ▼              ▼              ▼              ▼                             │
+│   "x" ─────────► "x +" ───────► "x + y" ────► "x + y^{2}"                      │
+│                                                                                  │
+│   ▲               ▲               ▲               ▲                             │
+│   │               │               │               │                             │
+│   └───────────────┴───────────────┴───────────────┘                             │
+│            TEXT CONTEXT (KV-cached, O(n) tokens)                                │
+│            Committed symbols = COMPRESSED knowledge                             │
+│                                                                                  │
+│  ADVANTAGES:                                                                     │
+│  ✓ Linear growth: text context O(n) vs visual history O(n × p²)                │
+│  ✓ Knowledge accumulation: each symbol COMMITTED to symbolic form              │
+│  ✓ Trajectory captured: sequence of [ADD, REPLACE, DELETE] operations          │
+│  ✓ O(1) edits: REPLACE only recomputes current stroke + [INT]                  │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Core Design Principles
+
+| Principle | Implementation | Benefit |
+|-----------|---------------|---------|
+| **Symbolic Commitment** | Recognized strokes → text tokens | Memory: O(n) vs O(n×p²) |
+| **Sparse Attention** | Causal on text, isolated patches | Compute: 60-70% savings |
+| **Dual-Token Separation** | [CLS]=visual, [INT]=semantic | Clean feature spaces |
+| **Incremental KV-Cache** | Text cached, patches ephemeral | O(1) edit operations |
+| **Trajectory Logging** | Edit operations as first-class | Reasoning path capture |
+
+### Reasoning Trajectory & Knowledge Graph Alignment
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    BEYOND OCR: REASONING TRAJECTORY CAPTURE                      │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Traditional OCR captures:     Context Tracker captures:                        │
+│  ═════════════════════════     ═════════════════════════                        │
+│                                                                                  │
+│  • Final expression            • Final expression                               │
+│    "x² + 2x + 1 = 0"            "x² + 2x + 1 = 0"                              │
+│                                                                                  │
+│                                • HOW it was constructed:                        │
+│                                  t=0: ADD "x"                                   │
+│                                  t=1: ADD "²"     ──┐                           │
+│                                  t=2: ADD "+"       │ Trajectory                │
+│                                  t=3: ADD "2x"      │ embedding                 │
+│                                  t=4: PAUSE 3s    ──┤                           │
+│                                  t=5: ADD "+1"      │ → Knowledge               │
+│                                  t=6: ADD "=0"      │    graph node             │
+│                                  t=7: DELETE "=0" ──┘    alignment              │
+│                                  t=8: WRAP "(...)²"                             │
+│                                                                                  │
+│  KNOWLEDGE GRAPH MODELING:                                                      │
+│  ═════════════════════════                                                      │
+│                                                                                  │
+│  Edit trajectory ──────► Trajectory encoder ──────► KG node prediction         │
+│                                │                                                │
+│                                ▼                                                │
+│                    ┌─────────────────────────┐                                  │
+│                    │  "quadratic_equation"   │                                  │
+│                    │         │               │                                  │
+│                    │    ┌────┴────┐          │                                  │
+│                    │    ▼         ▼          │                                  │
+│                    │ "factoring" "formula"   │                                  │
+│                    │    │                    │                                  │
+│                    │    ▼                    │                                  │
+│                    │ "(x+1)²=0" ◄── user's trajectory suggests this path       │
+│                    └─────────────────────────┘                                  │
+│                                                                                  │
+│  APPLICATIONS:                                                                  │
+│  • Tutoring hints (without giving answers)                                      │
+│  • Misconception detection (from hesitation/correction patterns)                │
+│  • Learning analytics (problem-solving strategy identification)                 │
+│  • Collaborative math (real-time shared derivations)                            │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Attention Pattern Philosophy
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    ATTENTION DESIGN: WHY SPARSE + DUAL-TOKEN?                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  FULL SELF-ATTENTION (BERT-style VLM):                                          │
+│  ═════════════════════════════════════                                          │
+│                                                                                  │
+│       Every token attends to every other token                                  │
+│       ┌─────────────────────────────────────┐                                   │
+│       │ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ │   Cost: O(N²)                       │
+│       │ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ │   N = text + patches                 │
+│       │ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ │                                      │
+│       │ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ │   Problem:                           │
+│       │ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ │   • Visual features DILUTED         │
+│       │ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ │     by attending to text            │
+│       └─────────────────────────────────────┘   • No KV-cache on edits         │
+│                                                                                  │
+│  OUR SPARSE + DUAL-TOKEN DESIGN:                                                │
+│  ═══════════════════════════════                                                │
+│                                                                                  │
+│       Structured sparsity with role separation                                  │
+│       ┌─────────────────────────────────────┐                                   │
+│       │ ■ ■ ■ · · · · · · · · · │ text     │   Text: causal (O(n²/2))          │
+│       │ ■ ■ ■ · · · · · · · · · │ context  │                                    │
+│       │ ■ ■ ■ · · · · · · · · · │          │   Patches: isolated group          │
+│       │ · · · ■ ■ ■ · · · · · · │ patches  │   (O(p²), no text dilution)        │
+│       │ · · · ■ ■ ■ · · · · · · │          │                                    │
+│       │ · · · ■ ■ ■ · · · · · · │          │   [CLS]: patches only              │
+│       │ · · · ■ ■ ■ ■ · · · · · │ [CLS]    │   (pure visual aggregation)        │
+│       │ ■ ■ ■ · · · ■ ■ · · · · │ [INT]    │                                    │
+│       │ ■ ■ ■ · · · ■ ■ ■ · · · │ decode   │   [INT]: text + [CLS]              │
+│       └─────────────────────────────────────┘   (semantic reasoning)            │
+│                                                                                  │
+│       Cost: O(n²/2 + p² + n) ≈ 35% of full attention                           │
+│       Benefit: Visual purity + O(1) edit capability                            │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## 1. System Overview
 
 ```
