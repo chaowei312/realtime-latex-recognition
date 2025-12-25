@@ -120,7 +120,11 @@ def render_strokes_to_array(
     size: tuple = (64, 64),
     num_strokes: int = None,  # None = complete
 ) -> np.ndarray:
-    """Render strokes to numpy array."""
+    """
+    Render strokes to numpy array using the proper StrokeRenderer.
+    
+    Uses anti-aliased PIL rendering for smooth strokes like in all_symbols_grid.png
+    """
     sym_data = loader.get_symbol(symbol)
     if sym_data is None:
         # Fallback: render a simple mark
@@ -132,7 +136,9 @@ def render_strokes_to_array(
                     arr[cy+dy, cx+dx] = 200
         return arr
     
-    renderer = StrokeRenderer(loader, canvas_size=max(size))
+    # Use proper renderer with good canvas size
+    canvas_size = max(size[0], size[1], 128)
+    renderer = StrokeRenderer(loader, canvas_size=canvas_size)
     
     stroke_names = sorted(sym_data.strokes.keys())
     total = len(stroke_names)
@@ -140,46 +146,23 @@ def render_strokes_to_array(
         num_strokes = total
     num_strokes = min(num_strokes, total)
     
-    # Render
-    canvas = np.zeros((max(size), max(size)), dtype=np.float32)
-    thickness = random.uniform(2.5, 4)
-    
-    for i, stroke_name in enumerate(stroke_names[:num_strokes]):
+    # Select random variations for each stroke
+    selected_strokes = []
+    for stroke_name in stroke_names[:num_strokes]:
         variations = sym_data.strokes[stroke_name]
         stroke = random.choice(variations)
-        
-        # Interpolate
-        interpolated = stroke.interpolate(40)
-        points = [(int(p.x * max(size)), int(p.y * max(size))) for p in interpolated.points]
-        
-        # Draw
-        for j in range(len(points) - 1):
-            x0, y0 = points[j]
-            x1, y1 = points[j + 1]
-            _draw_line(canvas, x0, y0, x1, y1, thickness)
+        # Interpolate for smooth curves
+        selected_strokes.append(stroke.interpolate(50))
     
-    # Resize to target
+    # Render using PIL (anti-aliased)
+    thickness = random.uniform(2.5, 3.5)
+    canvas = renderer._render_strokes(selected_strokes, thickness)
+    
+    # Resize to target size
     from PIL import Image as PILImage
     img = PILImage.fromarray((canvas * 255).astype(np.uint8), mode='L')
     img = img.resize(size, PILImage.LANCZOS)
     return np.array(img)
-
-
-def _draw_line(canvas, x0, y0, x1, y1, thickness):
-    h, w = canvas.shape
-    steps = max(abs(x1 - x0), abs(y1 - y0), 1)
-    for i in range(steps + 1):
-        t = i / steps if steps > 0 else 0
-        x = int(x0 + t * (x1 - x0))
-        y = int(y0 + t * (y1 - y0))
-        r = int(thickness / 2)
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                px, py = x + dx, y + dy
-                if 0 <= px < w and 0 <= py < h:
-                    dist = np.sqrt(dx*dx + dy*dy)
-                    if dist <= thickness / 2:
-                        canvas[py, px] = min(1.0, canvas[py, px] + 0.8)
 
 
 def compose_context_with_diagram(seed: int = 42) -> dict:
@@ -213,9 +196,9 @@ def compose_context_with_diagram(seed: int = 42) -> dict:
     if not edit_target:
         edit_target = "x"  # Fallback
     
-    # Symbol positions with jitter
+    # Symbol positions with jitter (small - within half bbox width)
     positions = []
-    jitter_range = 0.05
+    jitter_range = 0.015  # ~1.5% - stays well within symbol bounds
     
     # Atomic part position
     positions.append({
@@ -297,9 +280,13 @@ def visualize_context_with_strokes(
     img_w, img_h = latex_img.size
     for sym in symbols:
         cx, cy = sym['center']
-        # Add random jitter for visualization
-        jx = random.uniform(-10, 10)
-        jy = random.uniform(-10, 10)
+        # Small jitter (within ~1.5% of image, stays inside symbol)
+        bbox = sym.get('bbox', [cx-10, cy-10, cx+10, cy+10])
+        bbox_w = bbox[2] - bbox[0]
+        bbox_h = bbox[3] - bbox[1]
+        max_jitter = min(bbox_w, bbox_h) * 0.3  # Max 30% of smaller bbox dimension
+        jx = random.uniform(-max_jitter, max_jitter)
+        jy = random.uniform(-max_jitter, max_jitter)
         
         # Original position (blue)
         ax2.plot(cx, cy, 'bo', markersize=6, alpha=0.5)

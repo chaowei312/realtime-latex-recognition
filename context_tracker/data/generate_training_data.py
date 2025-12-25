@@ -174,7 +174,7 @@ def generate_commutative_diagrams(
     include_labels: bool = True,
     complexity_range: Tuple[int, int] = (1, 4),
     add_position_jitter: bool = True,
-    jitter_range: float = 0.05,
+    jitter_range: float = 0.015,  # Small: ~1.5% of bbox, stays within symbol
     seed: int = None,
 ) -> List[Dict[str, Any]]:
     """
@@ -466,7 +466,7 @@ def generate_compositional_context(
     separator: str = ", ",  # Natural separator
     seed: int = None,
     add_position_jitter: bool = True,
-    jitter_range: float = 0.05,
+    jitter_range: float = 0.015,  # Small: stays within half bbox width
 ) -> List[Dict[str, Any]]:
     """
     Generate compositional context (metadata only, no full images).
@@ -564,7 +564,7 @@ def generate_stroke_examples(
     add_distractors: bool = True,
     num_distractors: int = 3,
     add_position_jitter: bool = True,
-    jitter_range: float = 0.1,
+    jitter_range: float = 0.02,  # Small: ~2% offset from center
     seed: int = None,
 ) -> List[Dict[str, Any]]:
     """
