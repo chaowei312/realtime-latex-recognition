@@ -340,7 +340,7 @@ def compute_case_depth(before_latex: str, after_latex: str) -> int:
     before_complexity = analyze_latex_complexity(before_latex)
     after_complexity = analyze_latex_complexity(after_latex)
     return max(before_complexity.depth, after_complexity.depth)
-
+    
 
 def generate_by_depth_range(min_depth: int, max_depth: int, 
                             base_generator, count: int = 50) -> List:

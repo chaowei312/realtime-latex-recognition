@@ -1114,6 +1114,127 @@ We propose **two experimental attention patterns** to compare:
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Two-Phase Data Strategy: Recognition + Disambiguation
+
+We train on two complementary data types **jointly**, but evaluate **separately**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    TWO-PHASE DATA STRATEGY                                       │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  PHASE 1: RECOGNITION DATA                 PHASE 2: DISAMBIGUATION DATA         │
+│  ══════════════════════                    ═══════════════════════════          │
+│                                                                                  │
+│  Source: Random combinatorial              Source: Real math problem sets       │
+│          (synthetic LaTeX)                         (textbooks, competitions)    │
+│                                                                                  │
+│  Goal: Basic symbol recognition            Goal: Context-aware correction       │
+│                                                                                  │
+│  Confusion handling:                       Confusion handling:                  │
+│  • TOLERATE within group                   • EXPECT correct symbol              │
+│  • 1 ≈ I ≈ l ≈ | all acceptable           • "I" in algebra → must output "I"   │
+│                                            • "1" in arithmetic → must output "1"│
+│                                                                                  │
+│  Label: Any in confusion group OK          Label: Ground truth from context     │
+│                                                                                  │
+│  Augmentation:                             Augmentation:                        │
+│  • Random stroke variations                • DELIBERATE confusion injection     │
+│  • Position jitter                         • Replace I stroke with 1 stroke     │
+│  • Incomplete strokes                      • Force model to use context         │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  TRAINING: JOINT                           EVALUATION: SEPARATE                 │
+│  ═══════════════                           ════════════════════                 │
+│                                                                                  │
+│  Single model, mixed batches               Two distinct test sets               │
+│                                                                                  │
+│  Batch = [                                 Test Set A: RECOGNITION              │
+│    sample_phase1,  # recognition           ├─ Random expressions                │
+│    sample_phase1,                          ├─ Metric: Accuracy within group     │
+│    sample_phase2,  # disambiguation        └─ "1" pred for "I" gt → ✓ (OK)      │
+│    sample_phase1,                                                               │
+│    sample_phase2,                          Test Set B: DISAMBIGUATION           │
+│    ...                                     ├─ Real math problems                │
+│  ]                                         ├─ Metric: Exact match               │
+│                                            └─ "1" pred for "I" gt → ✗ (WRONG)   │
+│  Loss = CrossEntropy(pred, label)                                               │
+│  (same loss for both types)                                                     │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Confusion Groups Configuration**: See `configs/symbol_confusion_groups.json` for 35+ confusion groups with context disambiguation rules.
+
+Example disambiguation cases (deliberate adversarial augmentation):
+
+| Context | Visual Input (Strokes) | Expected Output | Reasoning |
+|---------|------------------------|-----------------|-----------|
+| "Let $I$ be the identity matrix, then $I \cdot A = $" | Looks like "1" | **I** | Algebraic context |
+| "$x^2 + \square = 0$ has no real solutions" | Looks like "I" | **1** | Arithmetic context |
+| "$O(n^2)$ complexity" | Looks like "0" | **O** | Big-O notation |
+| "$\rho = 1.2$ g/cm³" | Looks like "p" | **ρ** | Density in physics |
+| "$p(x) = 0.5$" | Looks like "ρ" | **p** | Probability context |
+| "$\sin(0) = 0$" | Looks like "O" | **0** | Trig evaluation |
+| "$\chi^2$ test" | Looks like "x" | **χ** | Statistics context |
+| "$2 \times 3 = 6$" | Looks like "x" | **×** | Multiplication |
+
+### Evaluation Metrics
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  EVALUATION REPORT FORMAT                                                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Test Set A: RECOGNITION (random expressions, N=10,000)                         │
+│  ───────────────────────────────────────────────────────                        │
+│  │ Metric                      │ Score  │ Note                                  │
+│  │ Group-tolerant accuracy     │ 94.2%  │ 1/I/l all count as correct            │
+│  │ Strict accuracy             │ 78.5%  │ Only exact match                      │
+│  │ Top-3 in-group rate         │ 98.1%  │ Correct group in top-3                │
+│                                                                                  │
+│  Test Set B: DISAMBIGUATION (math problems, N=5,000)                            │
+│  ───────────────────────────────────────────────────────                        │
+│  │ Metric                      │ Score  │ Note                                  │
+│  │ Exact match accuracy        │ 89.3%  │ Must be exactly correct               │
+│  │ Confusion resolution rate   │ 82.7%  │ Override visual with context          │
+│  │ Per-group breakdown:        │        │                                       │
+│  │   1/I/l group               │ 85.2%  │                                       │
+│  │   0/O/θ group               │ 91.4%  │                                       │
+│  │   ρ/p group                 │ 79.8%  │                                       │
+│  │   χ/x/× group               │ 83.1%  │                                       │
+│                                                                                  │
+│  COMBINED SCORE: 0.5 × 94.2% + 0.5 × 89.3% = 91.75%                             │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Curriculum Training Schedule
+
+```
+Epoch 1-10:   100% Phase 1 (recognition only)
+              └─ Model learns: stroke → symbol mapping
+              └─ Confusion groups tolerated
+
+Epoch 11-20:  70% Phase 1 + 30% Phase 2 (introduce disambiguation)
+              └─ Model starts learning context dependency
+
+Epoch 21-30:  50% Phase 1 + 50% Phase 2 (balanced)
+              └─ Both capabilities trained equally
+
+Epoch 31+:    30% Phase 1 + 70% Phase 2 (emphasis on context)
+              └─ Heavy focus on using context for ambiguous cases
+```
+
+### Academic Novelty
+
+> **"Confusion-Aware Training with Deliberate Adversarial Augmentation"**
+> 
+> Unlike traditional data augmentation that adds noise randomly, we deliberately inject strokes from *specific* confusion groups based on the mathematical context. This forces the model to learn disambiguation through context rather than pure visual recognition.
+> 
+> This combines: **curriculum learning** + **adversarial training** + **context grounding**.
+
 ---
 
 ## 7. Stroke-Grouped Attention with Learned Selection

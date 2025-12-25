@@ -339,14 +339,14 @@ class ContextComposer:
             # Scale context with depth
             ctx_chunks = min_context + int((max_context - min_context) * (min_d / 5))
             
-            examples.extend(self.compose_batch(
+        examples.extend(self.compose_batch(
                 num_examples=count,
                 min_depth=min_d,
                 max_depth=max_d,
                 num_context_chunks=min(ctx_chunks, max_context),
                 context_strategy="diverse" if min_d >= 3 else "random",
-                separator=separator,
-            ))
+            separator=separator,
+        ))
         
         return examples
     
@@ -409,7 +409,7 @@ def build_training_dataset(
     try:
         from ..synthetic_case_generator import CaseGenerator
     except ImportError:
-        from synthetic_case_generator import CaseGenerator
+    from synthetic_case_generator import CaseGenerator
     
     random.seed(seed)
     
