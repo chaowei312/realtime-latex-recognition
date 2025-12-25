@@ -550,13 +550,22 @@ class StrokeRenderer:
         if HAS_PIL:
             img = Image.fromarray((canvas * 255).astype(np.uint8), mode='L')
             img = img.resize((target_size[0], target_size[1]), Image.LANCZOS)
-            return np.array(img)
+            arr = np.array(img, dtype=np.float32)
+            
+            # LANCZOS downsampling averages thin strokes, reducing intensity
+            # Normalize to ensure strokes are clearly visible (target ~200-255 max)
+            if arr.max() > 0:
+                arr = arr * (220.0 / max(arr.max(), 1))
+            return np.clip(arr, 0, 255).astype(np.uint8)
         else:
             # Fallback: simple resize
             from scipy.ndimage import zoom
             scale_y = target_size[1] / canvas.shape[0]
             scale_x = target_size[0] / canvas.shape[1]
-            return (zoom(canvas, (scale_y, scale_x)) * 255).astype(np.uint8)
+            arr = zoom(canvas, (scale_y, scale_x)) * 255
+            if arr.max() > 0:
+                arr = arr * (220.0 / max(arr.max(), 1))
+            return np.clip(arr, 0, 255).astype(np.uint8)
     
     def render_all_variations(self, symbol: str, augment: bool = False) -> List[np.ndarray]:
         """Render all variation combinations for a symbol."""
