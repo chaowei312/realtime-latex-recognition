@@ -3464,6 +3464,7 @@ class CaseGenerator:
     """Main case generator that combines all categories."""
     
     def __init__(self, seed: int = None):
+        self.seed = seed
         if seed is not None:
             random.seed(seed)
     

@@ -660,7 +660,7 @@ class ChunkPool:
         Returns:
             ChunkPool with diverse chunks
         """
-        from synthetic_case_generator import analyze_latex_complexity
+        from ..synthetic_case_generator import analyze_latex_complexity
         
         pool = cls()
         

@@ -213,7 +213,7 @@ class StrokeDataLoader:
         """
         if data_path is None:
             # Default path relative to this file
-            data_path = Path(__file__).parent.parent / "symbols" / "stroke_data_merged.json"
+            data_path = Path(__file__).parent.parent / "stroke_corpus" / "annotations" / "stroke_data_merged.json"
         
         self.data_path = Path(data_path)
         self.symbols: Dict[str, SymbolData] = {}
