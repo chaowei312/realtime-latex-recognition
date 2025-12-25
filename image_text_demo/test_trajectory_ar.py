@@ -54,6 +54,13 @@ from context_tracker.model.module import (
     SwiGLUFFN,
 )
 
+# MathWriting dataset support
+try:
+    from data.mathwriting_dataset import get_mathwriting_datasets, MathWritingDataset
+    HAS_MATHWRITING = True
+except ImportError:
+    HAS_MATHWRITING = False
+
 
 # ============================================================================
 # Dataset: Line-level stroke sequences with text labels
@@ -1072,39 +1079,69 @@ def train_single_variant(args, variant: str) -> Dict:
     
     # Paths
     data_dir = Path(args.data_dir)
-    line_dir = data_dir / "line_text_dataset"
-    stroke_dir = data_dir / "stroke_letter_dataset"
+    mathwriting_dir = data_dir / "mathwriting"
     
-    # Load vocabulary
-    vocab_path = line_dir / "vocabulary.json"
-    with open(vocab_path, 'r') as f:
-        vocab = json.load(f)
+    # Decide which dataset to use
+    use_mathwriting = False
+    if args.dataset == "mathwriting" or (args.dataset == "auto" and HAS_MATHWRITING):
+        # Check if MathWriting full dataset exists
+        if (mathwriting_dir / "mathwriting-2024" / "train").exists():
+            use_mathwriting = True
+            print("Using MathWriting dataset (full)")
+        elif (mathwriting_dir / "mathwriting-2024-excerpt" / "train").exists():
+            use_mathwriting = True
+            print("Using MathWriting dataset (excerpt)")
     
-    idx_to_char = {v: k for k, v in vocab.items()}
-    vocab_size = len(vocab)
+    if use_mathwriting and HAS_MATHWRITING:
+        # Use MathWriting dataset
+        train_dataset, val_dataset, _ = get_mathwriting_datasets(
+            str(mathwriting_dir),
+            include_synthetic=not args.no_synthetic,
+            max_strokes=50,
+            max_text_len=128,
+            max_samples=args.max_samples,
+        )
+        
+        vocab = train_dataset.vocab
+        idx_to_char = train_dataset.idx_to_char
+        vocab_size = train_dataset.vocab_size
+        pad_id = train_dataset.pad_id
+        bos_id = train_dataset.bos_id
+        eos_id = train_dataset.eos_id
+    else:
+        # Fallback to IAM stroke letter dataset
+        print("Using IAM stroke letter dataset")
+        line_dir = data_dir / "line_text_dataset"
+        stroke_dir = data_dir / "stroke_letter_dataset"
+        stroke_vocab_path = stroke_dir / "vocabulary.json"
+        
+        with open(stroke_vocab_path, 'r') as f:
+            vocab = json.load(f)
+        
+        idx_to_char = {v: k for k, v in vocab.items()}
+        vocab_size = len(vocab)
+        
+        pad_id = vocab.get('<PAD>', 0)
+        bos_id = vocab.get('<BOS>', 1)
+        eos_id = vocab.get('<EOS>', 2)
+        
+        train_dataset = StrokeLineDataset(
+            stroke_data_path=str(stroke_dir / "stroke_letter_train.json"),
+            line_data_path=str(line_dir / "train.json"),
+            vocab_path=str(stroke_vocab_path),
+            max_strokes=20,
+            max_text_len=80,
+        )
+        
+        val_dataset = StrokeLineDataset(
+            stroke_data_path=str(stroke_dir / "stroke_letter_val.json"),
+            line_data_path=str(line_dir / "val.json"),
+            vocab_path=str(stroke_vocab_path),
+            max_strokes=20,
+            max_text_len=80,
+        )
     
-    pad_id = vocab.get('<PAD>', 0)
-    bos_id = vocab.get('<BOS>', 1)
-    eos_id = vocab.get('<EOS>', 2)
-    
-    # Create datasets using stroke letter data (with pre-computed patches)
-    stroke_vocab_path = stroke_dir / "vocabulary.json"
-    
-    train_dataset = StrokeLineDataset(
-        stroke_data_path=str(stroke_dir / "stroke_letter_train.json"),
-        line_data_path=str(line_dir / "train.json"),
-        vocab_path=str(stroke_vocab_path),
-        max_strokes=20,
-        max_text_len=80,
-    )
-    
-    val_dataset = StrokeLineDataset(
-        stroke_data_path=str(stroke_dir / "stroke_letter_val.json"),
-        line_data_path=str(line_dir / "val.json"),
-        vocab_path=str(stroke_vocab_path),
-        max_strokes=20,
-        max_text_len=80,
-    )
+    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Vocab: {vocab_size}")
     
     # Create dataloaders (fast since patches are pre-computed)
     train_loader = DataLoader(
@@ -1128,12 +1165,13 @@ def train_single_variant(args, variant: str) -> Dict:
     )
     
     # Create model
+    max_seq_len = 128 if use_mathwriting else 80
     model = TrajectoryARModel(
         vocab_size=vocab_size,
         embed_dim=args.embed_dim,
         num_heads=args.num_heads,
         num_layers=args.num_layers,
-        max_seq_len=80,
+        max_seq_len=max_seq_len,
         dropout=0.1,
         encoder_variant=variant,
         pad_id=pad_id,
@@ -1223,6 +1261,15 @@ def main():
     parser.add_argument("--variants", type=str, nargs='+',
                         default=None,
                         help="Specific variants to train in parallel")
+    
+    # Dataset options
+    parser.add_argument("--dataset", type=str, default="auto",
+                        choices=["auto", "mathwriting", "iam"],
+                        help="Dataset to use (auto selects mathwriting if available)")
+    parser.add_argument("--no-synthetic", action="store_true",
+                        help="Don't include synthetic samples in training")
+    parser.add_argument("--max-samples", type=int, default=None,
+                        help="Limit training samples (for faster testing)")
     
     args = parser.parse_args()
     
