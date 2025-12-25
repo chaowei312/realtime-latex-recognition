@@ -1017,6 +1017,243 @@ We propose **two experimental attention patterns** to compare:
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+---
+
+## 7. Stroke-Grouped Attention with Learned Selection
+
+### Multi-Stroke Grouping Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  STROKE-GROUPED PATCHES WITH PER-STROKE [CLS]                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Input structure:                                                               │
+│                                                                                  │
+│  ┌────────┬─────────────────────┬─────────────────────┬───────────────┬─────┐  │
+│  │ Text   │ Stroke Group k      │ Stroke Group k+1    │ Per-stroke CLS│ INT │  │
+│  │"x + y" │[P_k0][P_k1]..[CLS_k]│[P_k+1,0]...[CLS_k+1]│               │     │  │
+│  └────────┴─────────────────────┴─────────────────────┴───────────────┴─────┘  │
+│                                                                                  │
+│  Each stroke group has:                                                         │
+│  • Patches [P_i0, P_i1, ...]: visual features along stroke trajectory          │
+│  • [CLS_i]: aggregates that stroke's patches (isolated attention)              │
+│  • 2D position: (x_center, y_center) for spatial reasoning                     │
+│                                                                                  │
+│  [INT] attends to:                                                              │
+│  • Text context (what's already written)                                        │
+│  • All [CLS_i] tokens (what strokes are active)                                │
+│  • Makes selection: which stroke(s) to commit                                  │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Auxiliary Loss for Stroke Selection (Making it Learnable)
+
+Instead of hardcoded bbox overlap for edit detection, we use **learned attention-based selection**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  AUXILIARY LOSS: STROKE SELECTION SUPERVISION                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  TRAINING SIGNAL:                                                               │
+│  ════════════════                                                               │
+│                                                                                  │
+│  Ground truth provides:                                                         │
+│  • Which stroke(s) form the target symbol: y_stroke ∈ {0, 1}^K                 │
+│  • K = number of active stroke groups                                          │
+│                                                                                  │
+│  Example:                                                                        │
+│    Stroke 1: partial "α" (stroke 1 of 2)  → y_1 = 0 (not ready)               │
+│    Stroke 2: partial "α" (stroke 2 of 2)  → y_2 = 0 (not ready)               │
+│    Stroke 1+2 together: complete "α"       → y_{1,2} = 1 (ready to commit)    │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  ATTENTION-BASED SELECTION:                                                     │
+│  ══════════════════════════                                                     │
+│                                                                                  │
+│  [INT] attention weights over [CLS] tokens:                                     │
+│                                                                                  │
+│    α_i = softmax(W_q · INT · (W_k · CLS_i)^T / √d)                             │
+│                                                                                  │
+│  Average attention per stroke group:                                            │
+│                                                                                  │
+│    a_stroke_i = mean(α over patches in stroke i)                               │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  AUXILIARY LOSS:                                                                │
+│  ═══════════════                                                                │
+│                                                                                  │
+│    L_select = BCE(a_stroke, y_stroke)                                          │
+│                                                                                  │
+│    where:                                                                        │
+│    • a_stroke = [a_1, a_2, ..., a_K]  (attention scores)                       │
+│    • y_stroke = [y_1, y_2, ..., y_K]  (ground truth: 0=ignore, 1=commit)       │
+│                                                                                  │
+│  This teaches [INT] to:                                                         │
+│  • Attend highly to strokes that should be committed                           │
+│  • Ignore incomplete/irrelevant strokes                                        │
+│  • Combine multiple strokes when they form one symbol                          │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  TOTAL LOSS:                                                                    │
+│  ═══════════                                                                    │
+│                                                                                  │
+│    L_total = L_AR + λ_select · L_select + λ_pos · L_position                   │
+│                                                                                  │
+│    where:                                                                        │
+│    • L_AR: autoregressive cross-entropy for edit tokens                        │
+│    • L_select: stroke selection auxiliary loss                                 │
+│    • L_position: 2D position prediction loss (optional)                        │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Learned vs Hardcoded Edit Detection
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  COMPARISON: HARDCODED BBOX vs LEARNED SELECTION                                 │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  APPROACH A: Hardcoded BBox Overlap (Heuristic)                                 │
+│  ═════════════════════════════════════════════                                  │
+│                                                                                  │
+│    def detect_edit_region(new_stroke, committed_strokes):                       │
+│        for stroke in committed_strokes:                                         │
+│            if iou(new_stroke.bbox, stroke.bbox) > threshold:                   │
+│                return REPLACE, stroke.id                                        │
+│        return ADD, None                                                          │
+│                                                                                  │
+│    ✓ Simple, fast, interpretable                                                │
+│    ✗ Hardcoded threshold (not learned)                                          │
+│    ✗ Fails on complex spatial relationships                                     │
+│    ✗ Less "academic" (engineering solution)                                     │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  APPROACH B: Learned Attention Selection (End-to-End)                           │
+│  ════════════════════════════════════════════════════                           │
+│                                                                                  │
+│    [INT] learns to:                                                             │
+│    1. Attend to relevant [CLS] tokens based on content + position              │
+│    2. Output operation type (ADD/REPLACE/INSERT) as part of AR decode          │
+│    3. Implicitly learn spatial relationships via 2D RoPE                       │
+│                                                                                  │
+│    ✓ End-to-end learnable                                                       │
+│    ✓ Can handle complex spatial cases                                           │
+│    ✓ More "academic" (principled ML approach)                                   │
+│    ✗ Needs more training data                                                   │
+│    ✗ Less interpretable (attention is soft)                                    │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  APPROACH C: Hybrid (Recommended for Paper)                                     │
+│  ══════════════════════════════════════════                                     │
+│                                                                                  │
+│    1. Learned attention for stroke selection (Approach B)                      │
+│    2. BBox only for UI feedback / re-activation from canvas DB                 │
+│    3. Auxiliary loss provides supervision signal                               │
+│                                                                                  │
+│    Paper framing:                                                               │
+│    "We train the model end-to-end with an auxiliary stroke selection loss,     │
+│     where [INT] learns to attend to relevant strokes. BBox information is      │
+│     used only for efficient canvas management, not for model decisions."       │
+│                                                                                  │
+│    This is MORE academic because:                                               │
+│    • Core decision is LEARNED (attention + auxiliary loss)                     │
+│    • BBox is just implementation detail for efficiency                         │
+│    • Can ablate: learned-only vs bbox-assisted                                 │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Multi-Stroke Symbol Handling
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  LEARNED MULTI-STROKE COMBINATION                                                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Some symbols require multiple strokes: "=", "≠", "α", "∫", "Σ", etc.          │
+│                                                                                  │
+│  Training signal:                                                               │
+│  ────────────────                                                               │
+│                                                                                  │
+│    Input: [CLS_1: "─"], [CLS_2: "─"]   (two horizontal lines)                  │
+│    Target: y_stroke = [1, 1]            (both needed for "=")                  │
+│    Target output: "="                                                           │
+│                                                                                  │
+│  [INT] attention pattern (learned):                                             │
+│  ──────────────────────────────────                                             │
+│                                                                                  │
+│    [INT] → attention over [CLS_1, CLS_2]:                                      │
+│      • α_1 = 0.48 (high - include this stroke)                                 │
+│      • α_2 = 0.47 (high - include this stroke)                                 │
+│      • α_other = 0.05 (low - ignore other strokes)                             │
+│                                                                                  │
+│    This JOINTLY attends to both strokes → combines into "="                    │
+│                                                                                  │
+│  Loss supervision:                                                              │
+│  ─────────────────                                                              │
+│                                                                                  │
+│    L_select = BCE([0.48, 0.47, 0.05], [1, 1, 0])                               │
+│             = -log(0.48) - log(0.47) - log(0.95)  ← encourages correct pattern │
+│                                                                                  │
+│  Inference behavior:                                                            │
+│  ───────────────────                                                            │
+│                                                                                  │
+│    After committing "=":                                                        │
+│    • Deactivate BOTH stroke groups 1 and 2                                     │
+│    • Add "=" to text context                                                   │
+│    • Canvas DB: mark both strokes as committed to "="                          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Training Data Requirements
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  ANNOTATION FOR STROKE SELECTION LOSS                                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  From existing datasets (CROHME, MathWriting), we get:                          │
+│                                                                                  │
+│    InkML format provides:                                                       │
+│    • stroke_id → symbol mapping (which strokes form each symbol)               │
+│    • Temporal order (when each stroke was drawn)                               │
+│    • Ground truth LaTeX                                                         │
+│                                                                                  │
+│  We can automatically derive:                                                   │
+│                                                                                  │
+│    y_stroke[i] = 1  if stroke_i is part of current target symbol               │
+│    y_stroke[i] = 0  if stroke_i is incomplete or belongs to other symbol       │
+│                                                                                  │
+│  Example derivation:                                                            │
+│  ───────────────────                                                            │
+│                                                                                  │
+│    Expression: "α + β"                                                          │
+│    Strokes: [s1, s2] → α,  [s3] → +,  [s4, s5] → β                             │
+│                                                                                  │
+│    Training examples:                                                           │
+│    • After s1: y = [0] (incomplete α)                                          │
+│    • After s2: y = [1, 1] (complete α, both strokes)                           │
+│    • After s3: y = [1] (complete +)                                            │
+│    • After s4: y = [0] (incomplete β)                                          │
+│    • After s5: y = [1, 1] (complete β, both strokes)                           │
+│                                                                                  │
+│  NO additional annotation needed! Derived from existing stroke→symbol maps.    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ### Demo: Context Visualization
 
 ![Context Visualization](data/demos/context_visualization.png)
