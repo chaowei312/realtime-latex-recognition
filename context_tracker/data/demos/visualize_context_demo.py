@@ -459,7 +459,7 @@ def visualize_context_with_strokes(
         # Mark the replacement area - TIGHT around original symbol bbox
         box_pad = 1
         draw.rectangle([x0 - box_pad, y0 - box_pad, x1 + box_pad, y1 + box_pad], 
-                      outline='red', width=2)
+                      outline='red', width=1)
     
     ax3.imshow(img_with_strokes)
     # Show what was actually replaced (the symbol we drew strokes for)
