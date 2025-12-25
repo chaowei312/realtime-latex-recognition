@@ -467,8 +467,9 @@ def visualize_context_with_strokes(
         
         img_with_strokes.paste(stroke_rgba, (paste_x, paste_y), stroke_rgba)
         
-        # Mark the replacement area
-        draw.rectangle([paste_x, paste_y, paste_x + stroke_size, paste_y + stroke_size], 
+        # Mark the replacement area with red box - TIGHT around symbol bbox
+        box_pad = 3
+        draw.rectangle([x0 - box_pad, y0 - box_pad, x1 + box_pad, y1 + box_pad], 
                       outline='red', width=2)
     
     ax3.imshow(img_with_strokes)
