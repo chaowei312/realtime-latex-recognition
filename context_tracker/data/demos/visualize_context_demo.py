@@ -182,62 +182,30 @@ def render_strokes_to_array(
     symbol: str,
     size: tuple = (64, 64),
     num_strokes: int = None,  # None = complete
-    margin: float = 0.15,  # 15% margin on each side
 ) -> np.ndarray:
     """
-    Render strokes to numpy array using the proper StrokeRenderer.
+    Render strokes to numpy array using the core StrokeRenderer.
     
-    Uses anti-aliased PIL rendering for smooth strokes like in all_symbols_grid.png.
+    This is a thin wrapper around StrokeRenderer.render_to_size().
+    Uses anti-aliased PIL rendering for smooth strokes.
     
     Args:
-        margin: Margin as fraction of canvas (0.15 = strokes use 70% of space,
-                leaving 15% on each side for thickness)
+        loader: StrokeDataLoader instance
+        symbol: Symbol character to render
+        size: (width, height) target size
+        num_strokes: Number of strokes (None = complete symbol)
+        
+    Returns:
+        numpy array [H, W] with values 0-255 (uint8)
     """
-    sym_data = loader.get_symbol(symbol)
-    if sym_data is None:
-        # Fallback: render a simple mark
-        arr = np.zeros(size, dtype=np.uint8)
-        cx, cy = size[0] // 2, size[1] // 2
-        for dx in range(-3, 4):
-            for dy in range(-3, 4):
-                if 0 <= cx+dx < size[0] and 0 <= cy+dy < size[1]:
-                    arr[cy+dy, cx+dx] = 200
-        return arr
-    
-    # Use proper renderer with good canvas size
-    canvas_size = max(size[0], size[1], 128)
-    renderer = StrokeRenderer(loader, canvas_size=canvas_size)
-    
-    stroke_names = sorted(sym_data.strokes.keys())
-    total = len(stroke_names)
-    if num_strokes is None:
-        num_strokes = total
-    num_strokes = min(num_strokes, total)
-    
-    # Select random variations for each stroke and apply margin transform
-    # Scale strokes to fit within margin (0-1 -> margin to 1-margin)
-    scale_factor = 1.0 - 2 * margin
-    offset = margin
-    
-    selected_strokes = []
-    for stroke_name in stroke_names[:num_strokes]:
-        variations = sym_data.strokes[stroke_name]
-        stroke = random.choice(variations)
-        # Interpolate for smooth curves
-        stroke = stroke.interpolate(50)
-        # Scale down with margin: transform from [0,1] to [margin, 1-margin]
-        stroke = stroke.apply_transform(scale=scale_factor, translate=(offset, offset), center=(0, 0))
-        selected_strokes.append(stroke)
-    
-    # Render using PIL (anti-aliased)
-    thickness = random.uniform(2.5, 3.5)
-    canvas = renderer._render_strokes(selected_strokes, thickness)
-    
-    # Resize to target size
-    from PIL import Image as PILImage
-    img = PILImage.fromarray((canvas * 255).astype(np.uint8), mode='L')
-    img = img.resize(size, PILImage.LANCZOS)
-    return np.array(img)
+    # Use the core renderer's render_to_size method
+    renderer = StrokeRenderer(loader, margin=0.15)
+    return renderer.render_to_size(
+        symbol=symbol,
+        target_size=size,
+        num_strokes=num_strokes,
+        augment=True
+    )
 
 
 def compose_context_with_diagram(seed: int = 42) -> dict:

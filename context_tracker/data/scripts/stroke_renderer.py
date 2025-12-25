@@ -457,6 +457,107 @@ class StrokeRenderer:
                 err += dx
                 y0 += sy
     
+    def render_to_size(self,
+                       symbol: str,
+                       target_size: Tuple[int, int],
+                       num_strokes: Optional[int] = None,
+                       augment: bool = True,
+                       variation_indices: Optional[List[int]] = None) -> np.ndarray:
+        """
+        Render a symbol to a specific target size with high-quality scaling.
+        
+        This is the recommended method for rendering strokes to match a bounding box.
+        It renders at high resolution internally then scales down for quality.
+        
+        Args:
+            symbol: Symbol character to render
+            target_size: (width, height) tuple for output size
+            num_strokes: Number of strokes to render (None = all, for complete symbol)
+            augment: Apply random augmentation
+            variation_indices: Which variation for each stroke (random if None)
+            
+        Returns:
+            Canvas as numpy array [H, W] with values 0-255 (uint8)
+        """
+        sym_data = self.loader.get_symbol(symbol)
+        if sym_data is None:
+            return np.zeros((target_size[1], target_size[0]), dtype=np.uint8)
+        
+        # Render at higher resolution for quality
+        render_size = max(target_size[0], target_size[1], 64) * 4
+        
+        # Temporarily set canvas size
+        original_size = self.canvas_size
+        self.canvas_size = render_size
+        
+        # Get strokes to render
+        stroke_names = sorted(sym_data.strokes.keys())
+        total_strokes = len(stroke_names)
+        if num_strokes is None:
+            num_strokes = total_strokes
+        num_strokes = min(num_strokes, total_strokes)
+        
+        # Select variations
+        if variation_indices is None:
+            variation_indices = [
+                random.randint(0, len(sym_data.strokes[name]) - 1)
+                for name in stroke_names
+            ]
+        
+        # Get augmentation params
+        aug_params = self.augmentation.sample() if augment else {
+            'jitter': 0, 'rotation': 0, 'scale': 1.0,
+            'thickness': 3.0, 'translate': (0, 0)
+        }
+        
+        # Collect strokes (only num_strokes)
+        all_strokes: List[StrokeData] = []
+        margin_scale = 1.0 - 2 * self.margin
+        margin_offset = self.margin
+        
+        for i, stroke_name in enumerate(stroke_names[:num_strokes]):
+            var_idx = variation_indices[i] if i < len(variation_indices) else 0
+            var_idx = var_idx % len(sym_data.strokes[stroke_name])
+            
+            stroke = sym_data.strokes[stroke_name][var_idx]
+            stroke = stroke.interpolate(self.augmentation.interpolate_points)
+            
+            # Apply margin
+            stroke = stroke.apply_transform(
+                scale=margin_scale,
+                translate=(margin_offset, margin_offset),
+                center=(0, 0)
+            )
+            
+            # Apply augmentation
+            stroke = stroke.apply_transform(
+                rotation=aug_params['rotation'],
+                scale=aug_params['scale'],
+                translate=aug_params['translate']
+            )
+            if aug_params['jitter'] > 0:
+                stroke = stroke.add_jitter(aug_params['jitter'])
+            
+            all_strokes.append(stroke)
+        
+        # Render
+        canvas = self._render_strokes(all_strokes, aug_params['thickness'])
+        
+        # Restore canvas size
+        self.canvas_size = original_size
+        
+        # Scale down to target size
+        if HAS_PIL:
+            img = Image.fromarray((canvas * 255).astype(np.uint8), mode='L')
+            img = img.resize((target_size[0], target_size[1]), Image.LANCZOS)
+            return np.array(img)
+        else:
+            # Fallback: simple resize
+            from scipy.ndimage import zoom
+            scale_y = target_size[1] / canvas.shape[0]
+            scale_x = target_size[0] / canvas.shape[1]
+            return (zoom(canvas, (scale_y, scale_x)) * 255).astype(np.uint8)
+    
     def render_all_variations(self, symbol: str, augment: bool = False) -> List[np.ndarray]:
         """Render all variation combinations for a symbol."""
         sym_data = self.loader.get_symbol(symbol)
