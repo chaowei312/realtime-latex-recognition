@@ -450,22 +450,29 @@ def visualize_context_with_strokes(
         bbox_w = x1 - x0
         bbox_h = y1 - y0
         
-        # Render stroke to FIT EXACTLY within the bbox
-        # Use the bbox size directly (with minimum for visibility)
-        stroke_size = max(bbox_w, bbox_h, 15)  # Minimum 15px for visibility
+        # Render stroke to fit EXACTLY within the bbox (no minimum - use actual size)
+        # Make it square based on the larger dimension to preserve aspect ratio
+        stroke_size = max(bbox_w, bbox_h)
         
-        stroke_arr = render_strokes_to_array(loader, replaced_char, size=(stroke_size, stroke_size))
-        stroke_img = Image.fromarray(stroke_arr, mode='L')
+        # Render at higher resolution then scale down for quality
+        render_size = max(stroke_size * 4, 64)  # At least 64px for quality
+        stroke_arr = render_strokes_to_array(loader, replaced_char, size=(render_size, render_size))
+        
+        # Scale down to actual bbox size
+        from PIL import Image as PILImage
+        stroke_img = PILImage.fromarray(stroke_arr, mode='L')
+        stroke_img = stroke_img.resize((stroke_size, stroke_size), PILImage.LANCZOS)
+        stroke_arr = np.array(stroke_img)
         
         # White out just the original symbol area (tight)
-        draw.rectangle([x0-2, y0-2, x1+2, y1+2], fill='white')
+        draw.rectangle([x0-1, y0-1, x1+1, y1+1], fill='white')
         
         # Center the stroke on the symbol bbox
         paste_x = x0 + (bbox_w - stroke_size) // 2
         paste_y = y0 + (bbox_h - stroke_size) // 2
         
-        # Small jitter (less than half bbox size)
-        max_jitter = max(1, min(bbox_w, bbox_h) // 4)
+        # Small jitter (very small - just 1-2 pixels)
+        max_jitter = max(1, min(bbox_w, bbox_h) // 6)
         jitter_x = random.randint(-max_jitter, max_jitter)
         jitter_y = random.randint(-max_jitter, max_jitter)
         paste_x += jitter_x
@@ -481,10 +488,9 @@ def visualize_context_with_strokes(
         
         img_with_strokes.paste(stroke_rgba, (paste_x, paste_y), stroke_rgba)
         
-        # Mark the replacement area - matches where strokes were placed
-        box_pad = 2
-        draw.rectangle([paste_x - box_pad, paste_y - box_pad, 
-                       paste_x + stroke_size + box_pad, paste_y + stroke_size + box_pad], 
+        # Mark the replacement area - TIGHT around original symbol bbox
+        box_pad = 1
+        draw.rectangle([x0 - box_pad, y0 - box_pad, x1 + box_pad, y1 + box_pad], 
                       outline='red', width=2)
     
     ax3.imshow(img_with_strokes)
