@@ -251,13 +251,14 @@ def compose_context_with_diagram(seed: int = 42, rich_context: bool = True) -> d
         simple_vars = ['v', 'w', 'z', 'u']
         simple_var = random.choice(simple_vars)
         
-        # Compose: atomic expressions with "," separator, then matrices (no comma), then diagram
+        # Compose: atomic math expressions separated by "," (natural separator)
+        # Use ", \quad" to add comma with spacing
         atomic_parts = [limit_expr, matrix1, matrix2, simple_var]
-        math_context = " \\quad ".join(atomic_parts)  # Matrices don't need comma
+        math_context = ", \\quad ".join(atomic_parts)  # Comma between atomic parts
         
-        # Diagram added separately (no comma before diagram)
+        # Diagram added separately (NO comma before diagram - it's a special structure)
         context_parts = [math_context, diagram['latex']]
-        full_context = " \\quad ".join(context_parts)
+        full_context = " \\quad ".join(context_parts)  # Just space before diagram
     else:
         # Simple context: one atomic + one diagram
         context_parts = [

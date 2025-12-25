@@ -88,7 +88,7 @@ class ComposedTrainingExample:
     total_depth: int  # Effective depth of the composed expression
     
     # FIELDS WITH DEFAULTS must come last
-    separator: str = " \\quad "  # How chunks are joined
+    separator: str = ", "  # Natural comma separator between chunks
     
     # 2D POSITIONAL INFO - For 2D RoPE attention!
     # These are normalized (0-1) coordinates of edit region center in image space

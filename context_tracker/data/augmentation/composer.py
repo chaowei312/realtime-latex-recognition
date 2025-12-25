@@ -34,7 +34,7 @@ class ContextComposer:
                        target_chunk: ExpressionChunk,
                        num_context_chunks: int = 3,
                        context_strategy: str = "random",
-                       separator: str = " \\quad ",
+                       separator: str = ", ",  # Natural comma separator
                        target_position: Optional[int] = None) -> ComposedTrainingExample:
         """
         Compose a single training example.
@@ -235,7 +235,7 @@ class ContextComposer:
                       max_depth: Optional[int] = None,
                       num_context_chunks: int = 3,
                       context_strategy: str = "diverse",
-                      separator: str = " \\quad ",
+                      separator: str = ", ",  # Natural comma separator
                       max_retries: int = 3) -> List[ComposedTrainingExample]:
         """
         Compose a batch of training examples.
@@ -305,7 +305,7 @@ class ContextComposer:
                            min_context: int = 1,
                            max_context: int = 5,
                            depth_distribution: Optional[Dict[Tuple[int, int], float]] = None,
-                           separator: str = " \\quad ") -> List[ComposedTrainingExample]:
+                           separator: str = ", ") -> List[ComposedTrainingExample]:  # Natural comma
         """
         Generate curriculum-ordered examples with increasing complexity by depth.
         
