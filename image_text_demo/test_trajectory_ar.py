@@ -10,7 +10,14 @@ Architecture:
 3. [Patch embeddings] [CLS] → Decoder → Autoregressive text output
 
 Usage:
+    # Single variant
     python test_trajectory_ar.py --epochs 20 --encoder-variant stacked_3x3_s2
+    
+    # Parallel training of multiple variants (for high-end GPUs like 5090)
+    python test_trajectory_ar.py --parallel --epochs 10 --batch-size 128
+    
+    # Compare all variants
+    python test_trajectory_ar.py --compare-all --epochs 5 --batch-size 64
 """
 
 import os
@@ -20,9 +27,13 @@ import time
 import math
 import argparse
 import pickle
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
+from dataclasses import dataclass, field
 
 import numpy as np
 import torch
@@ -674,32 +685,386 @@ def compute_cer(pred: str, target: str) -> float:
 
 
 # ============================================================================
-# Main
+# Parallel Training Infrastructure
 # ============================================================================
 
-def main():
-    parser = argparse.ArgumentParser(description="Test Trajectory AR Model")
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--embed-dim", type=int, default=256)
-    parser.add_argument("--num-heads", type=int, default=8)
-    parser.add_argument("--num-layers", type=int, default=4)
-    parser.add_argument("--encoder-variant", type=str, default="stacked_3x3_s2")
-    parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--data-dir", type=str, 
-                        default=str(Path(__file__).parent / "data"))
+@dataclass
+class TrainingProgress:
+    """Track training progress for a variant."""
+    variant: str
+    epoch: int = 0
+    total_epochs: int = 0
+    train_loss: float = 0.0
+    train_acc: float = 0.0
+    val_loss: float = 0.0
+    val_cer: float = 1.0
+    best_cer: float = 1.0
+    status: str = "pending"
+    epoch_time: float = 0.0
+
+
+class ProgressDisplay:
+    """Display progress for multiple parallel training jobs."""
     
-    args = parser.parse_args()
+    def __init__(self, variants: List[str]):
+        self.variants = variants
+        self.progress: Dict[str, TrainingProgress] = {
+            v: TrainingProgress(variant=v) for v in variants
+        }
+        self.lock = threading.Lock()
+        self.start_time = time.time()
     
-    # Device
-    if args.device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    else:
-        device = args.device
+    def update(self, variant: str, **kwargs):
+        with self.lock:
+            for key, value in kwargs.items():
+                if hasattr(self.progress[variant], key):
+                    setattr(self.progress[variant], key, value)
+    
+    def display(self):
+        """Print current progress for all variants."""
+        elapsed = time.time() - self.start_time
+        
+        print("\n" + "=" * 100)
+        print(f"PARALLEL TRAINING PROGRESS (Elapsed: {elapsed:.0f}s)")
+        print("=" * 100)
+        print(f"{'Variant':<25} {'Status':<10} {'Epoch':<12} {'Train Loss':<12} {'Val CER':<12} {'Best CER':<12}")
+        print("-" * 100)
+        
+        for variant in self.variants:
+            p = self.progress[variant]
+            epoch_str = f"{p.epoch}/{p.total_epochs}" if p.total_epochs > 0 else "-"
+            
+            status_color = {
+                "pending": "",
+                "training": "→ ",
+                "completed": "✓ ",
+                "error": "✗ ",
+            }.get(p.status, "")
+            
+            print(f"{variant:<25} {status_color + p.status:<10} {epoch_str:<12} "
+                  f"{p.train_loss:<12.4f} {p.val_cer:<12.4f} {p.best_cer:<12.4f}")
+        
+        print("=" * 100)
+
+
+def train_variant_parallel(
+    variant: str,
+    train_dataset: Dataset,
+    val_dataset: Dataset,
+    vocab_size: int,
+    vocab: Dict,
+    args,
+    device: str,
+    progress_display: ProgressDisplay,
+    stream: Optional[torch.cuda.Stream] = None,
+) -> Dict:
+    """Train a single variant (for parallel execution)."""
+    
+    try:
+        progress_display.update(variant, status="training", total_epochs=args.epochs)
+        
+        # Use CUDA stream if provided
+        if stream is not None:
+            torch.cuda.set_stream(stream)
+        
+        idx_to_char = {v: k for k, v in vocab.items()}
+        pad_id = vocab.get('<PAD>', 0)
+        bos_id = vocab.get('<BOS>', 1)
+        eos_id = vocab.get('<EOS>', 2)
+        
+        # Create dataloaders
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            collate_fn=collate_stroke_lines,
+            num_workers=0,
+            pin_memory=True,
+        )
+        
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            collate_fn=collate_stroke_lines,
+            num_workers=0,
+            pin_memory=True,
+        )
+        
+        # Create model
+        model = TrajectoryARModel(
+            vocab_size=vocab_size,
+            embed_dim=args.embed_dim,
+            num_heads=args.num_heads,
+            num_layers=args.num_layers,
+            max_seq_len=80,
+            dropout=0.1,
+            encoder_variant=variant,
+            pad_id=pad_id,
+        ).to(device)
+        
+        # Optimizer and loss
+        optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+        criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
+        
+        # Training loop
+        best_cer = float('inf')
+        history = []
+        
+        for epoch in range(args.epochs):
+            start_time = time.time()
+            
+            train_loss, train_acc = train_epoch(model, train_loader, optimizer, criterion, device)
+            val_loss, val_cer = evaluate(model, val_loader, criterion, device, idx_to_char, bos_id, eos_id, pad_id)
+            
+            epoch_time = time.time() - start_time
+            
+            if val_cer < best_cer:
+                best_cer = val_cer
+            
+            # Update progress
+            progress_display.update(
+                variant,
+                epoch=epoch + 1,
+                train_loss=train_loss,
+                train_acc=train_acc,
+                val_loss=val_loss,
+                val_cer=val_cer,
+                best_cer=best_cer,
+                epoch_time=epoch_time,
+            )
+            
+            history.append({
+                'epoch': epoch + 1,
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'val_loss': val_loss,
+                'val_cer': val_cer,
+            })
+        
+        progress_display.update(variant, status="completed")
+        
+        encoder_config = model.patch_encoder.get_config_summary()
+        
+        return {
+            'variant': variant,
+            'best_cer': best_cer,
+            'final_val_cer': val_cer,
+            'encoder_params': encoder_config['num_params'],
+            'total_params': sum(p.numel() for p in model.parameters()),
+            'history': history,
+            'status': 'completed',
+        }
+        
+    except Exception as e:
+        progress_display.update(variant, status="error")
+        return {
+            'variant': variant,
+            'status': 'error',
+            'error': str(e),
+        }
+
+
+def run_parallel_training(args, variants: List[str]):
+    """Run parallel training for multiple variants using CUDA streams."""
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     
     print(f"Device: {device}")
-    print(f"Encoder variant: {args.encoder_variant}")
+    if device == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    
+    print(f"\nTraining {len(variants)} variants in parallel:")
+    for v in variants:
+        print(f"  - {v}")
+    
+    # Paths
+    data_dir = Path(args.data_dir)
+    line_dir = data_dir / "line_text_dataset"
+    stroke_dir = data_dir / "stroke_letter_dataset"
+    
+    # Load vocabulary
+    vocab_path = line_dir / "vocabulary.json"
+    with open(vocab_path, 'r') as f:
+        vocab = json.load(f)
+    
+    vocab_size = len(vocab)
+    print(f"\nVocabulary size: {vocab_size}")
+    
+    # Create datasets (shared across all variants)
+    train_dataset = StrokeLineDataset(
+        stroke_data_path=str(stroke_dir / "stroke_letter_train.json") if stroke_dir.exists() else None,
+        line_data_path=str(line_dir / "train.json"),
+        vocab_path=str(vocab_path),
+        max_strokes=20,
+        max_text_len=80,
+    )
+    
+    val_dataset = StrokeLineDataset(
+        stroke_data_path=str(stroke_dir / "stroke_letter_val.json") if stroke_dir.exists() else None,
+        line_data_path=str(line_dir / "val.json"),
+        vocab_path=str(vocab_path),
+        max_strokes=20,
+        max_text_len=80,
+    )
+    
+    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    print(f"Batch size: {args.batch_size}, Epochs: {args.epochs}")
+    
+    # Progress display
+    progress_display = ProgressDisplay(variants)
+    
+    # Create CUDA streams for parallel execution
+    streams = [torch.cuda.Stream() for _ in variants] if device == "cuda" else [None] * len(variants)
+    
+    # Start parallel training with ThreadPoolExecutor
+    results = []
+    
+    # Display thread (updates every 5 seconds)
+    stop_display = threading.Event()
+    
+    def display_loop():
+        while not stop_display.is_set():
+            progress_display.display()
+            time.sleep(5)
+    
+    display_thread = threading.Thread(target=display_loop, daemon=True)
+    display_thread.start()
+    
+    # Train each variant (sequentially but with large batches to maximize GPU util)
+    # For true parallelism with shared GPU, we interleave batches
+    
+    print("\n" + "=" * 100)
+    print("Starting parallel training...")
+    print("=" * 100)
+    
+    with ThreadPoolExecutor(max_workers=min(len(variants), 4)) as executor:
+        futures = {}
+        
+        for i, variant in enumerate(variants):
+            future = executor.submit(
+                train_variant_parallel,
+                variant,
+                train_dataset,
+                val_dataset,
+                vocab_size,
+                vocab,
+                args,
+                device,
+                progress_display,
+                streams[i],
+            )
+            futures[future] = variant
+        
+        # Collect results
+        for future in as_completed(futures):
+            variant = futures[future]
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    'variant': variant,
+                    'status': 'error',
+                    'error': str(e),
+                })
+    
+    # Stop display thread
+    stop_display.set()
+    time.sleep(0.5)
+    
+    # Final display
+    progress_display.display()
+    
+    # Print summary
+    print("\n" + "=" * 100)
+    print("FINAL RESULTS")
+    print("=" * 100)
+    print(f"{'Variant':<25} {'Status':<12} {'Best CER':<12} {'Params':<15}")
+    print("-" * 100)
+    
+    for r in sorted(results, key=lambda x: x.get('best_cer', float('inf'))):
+        if r['status'] == 'completed':
+            print(f"{r['variant']:<25} {r['status']:<12} {r['best_cer']:<12.4f} {r['total_params']:,}")
+        else:
+            print(f"{r['variant']:<25} {r['status']:<12} ERROR: {r.get('error', 'Unknown')}")
+    
+    print("=" * 100)
+    
+    # Find best
+    completed = [r for r in results if r['status'] == 'completed']
+    if completed:
+        best = min(completed, key=lambda x: x['best_cer'])
+        print(f"\n🏆 Best variant: {best['variant']} (CER: {best['best_cer']:.4f})")
+    
+    # Save results
+    output_file = Path(__file__).parent / "parallel_training_results.json"
+    with open(output_file, 'w') as f:
+        json.dump(results, f, indent=2, default=str)
+    print(f"\nResults saved to: {output_file}")
+    
+    return results
+
+
+def run_sequential_high_throughput(args, variants: List[str]):
+    """
+    Sequential training but with maximum GPU utilization.
+    Better for memory-constrained scenarios.
+    """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    print(f"Device: {device}")
+    if device == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"GPU Memory: {mem_gb:.1f} GB")
+        
+        # Auto-adjust batch size for high-end GPUs
+        if mem_gb > 20:  # 5090 has ~32GB
+            suggested_batch = 256
+        elif mem_gb > 10:
+            suggested_batch = 128
+        else:
+            suggested_batch = 64
+        
+        if args.batch_size < suggested_batch:
+            print(f"💡 Tip: Your GPU has {mem_gb:.0f}GB, consider --batch-size {suggested_batch}")
+    
+    print(f"\nSequential training of {len(variants)} variants:")
+    
+    results = []
+    
+    for variant in variants:
+        print(f"\n{'='*60}")
+        print(f"Training: {variant}")
+        print('='*60)
+        
+        result = train_single_variant(args, variant)
+        results.append(result)
+        
+        if device == "cuda":
+            torch.cuda.empty_cache()
+    
+    # Summary
+    print("\n" + "=" * 100)
+    print("COMPARISON SUMMARY")
+    print("=" * 100)
+    print(f"{'Variant':<25} {'Params':<15} {'Best CER':<12} {'Avg Time/Epoch':<15}")
+    print("-" * 100)
+    
+    for r in sorted(results, key=lambda x: x.get('best_cer', float('inf'))):
+        if 'error' not in r:
+            avg_time = sum(h.get('time', 0) for h in r.get('history', [])) / max(len(r.get('history', [])), 1)
+            print(f"{r['variant']:<25} {r['total_params']:<15,} {r['best_cer']:<12.4f} {avg_time:<15.1f}s")
+    
+    return results
+
+
+def train_single_variant(args, variant: str) -> Dict:
+    """Train a single variant with progress display."""
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Paths
     data_dir = Path(args.data_dir)
@@ -714,9 +1079,6 @@ def main():
     idx_to_char = {v: k for k, v in vocab.items()}
     vocab_size = len(vocab)
     
-    print(f"Vocabulary size: {vocab_size}")
-    
-    # Special tokens
     pad_id = vocab.get('<PAD>', 0)
     bos_id = vocab.get('<BOS>', 1)
     eos_id = vocab.get('<EOS>', 2)
@@ -738,15 +1100,15 @@ def main():
         max_text_len=80,
     )
     
-    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
-    
-    # Create dataloaders
+    # Create dataloaders with larger batch size
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=collate_stroke_lines,
-        num_workers=0,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
     )
     
     val_loader = DataLoader(
@@ -754,7 +1116,9 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         collate_fn=collate_stroke_lines,
-        num_workers=0,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
     )
     
     # Create model
@@ -765,22 +1129,34 @@ def main():
         num_layers=args.num_layers,
         max_seq_len=80,
         dropout=0.1,
-        encoder_variant=args.encoder_variant,
+        encoder_variant=variant,
         pad_id=pad_id,
     ).to(device)
     
-    # Print model info
+    # Enable CUDA optimizations
+    if device == "cuda":
+        torch.backends.cudnn.benchmark = True
+        # Compile model for faster training (PyTorch 2.0+)
+        if hasattr(torch, 'compile'):
+            try:
+                model = torch.compile(model, mode='reduce-overhead')
+                print("✓ Model compiled with torch.compile()")
+            except Exception:
+                pass
+    
     encoder_config = model.patch_encoder.get_config_summary()
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Encoder: {encoder_config['name']} ({encoder_config['num_params']:,} params)")
     print(f"Total model params: {total_params:,}")
+    print(f"Batch size: {args.batch_size}")
     
     # Optimizer and loss
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
     
-    # Training loop
+    # Training loop with tqdm
     best_cer = float('inf')
+    history = []
     
     for epoch in range(args.epochs):
         start_time = time.time()
@@ -790,39 +1166,96 @@ def main():
         
         epoch_time = time.time() - start_time
         
-        print(f"Epoch {epoch+1}/{args.epochs}: "
-              f"Train Loss={train_loss:.4f}, Acc={train_acc:.4f} | "
-              f"Val Loss={val_loss:.4f}, CER={val_cer:.4f} | "
-              f"Time={epoch_time:.1f}s")
-        
         if val_cer < best_cer:
             best_cer = val_cer
-            print(f"  → New best CER: {best_cer:.4f}")
-    
-    print(f"\nFinal best CER: {best_cer:.4f}")
-    
-    # Show sample predictions
-    print("\nSample predictions:")
-    model.eval()
-    with torch.no_grad():
-        batch = next(iter(val_loader))
-        patches = batch['patches'][:3].to(device)
-        patch_mask = batch['patch_mask'][:3].to(device)
-        targets = batch['texts'][:3]
+            marker = " ← best"
+        else:
+            marker = ""
         
-        generated = model.generate(
-            patches, patch_mask,
-            max_length=50,
-            bos_id=bos_id,
-            eos_id=eos_id,
-            temperature=0.0,
-        )
+        print(f"Epoch {epoch+1}/{args.epochs}: "
+              f"Loss={train_loss:.4f} Acc={train_acc:.4f} | "
+              f"Val CER={val_cer:.4f}{marker} | {epoch_time:.1f}s")
         
-        for i in range(min(3, len(targets))):
-            pred = decode_tokens(generated[i].tolist(), idx_to_char, eos_id, bos_id, pad_id)
-            print(f"  Target: '{targets[i]}'")
-            print(f"  Pred:   '{pred}'")
-            print()
+        history.append({
+            'epoch': epoch + 1,
+            'train_loss': train_loss,
+            'train_acc': train_acc,
+            'val_loss': val_loss,
+            'val_cer': val_cer,
+            'time': epoch_time,
+        })
+    
+    return {
+        'variant': variant,
+        'best_cer': best_cer,
+        'final_val_cer': val_cer,
+        'encoder_params': encoder_config['num_params'],
+        'total_params': total_params,
+        'history': history,
+        'status': 'completed',
+    }
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="Test Trajectory AR Model")
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch-size", type=int, default=128,
+                        help="Batch size (use 128-256 for 5090)")
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--embed-dim", type=int, default=256)
+    parser.add_argument("--num-heads", type=int, default=8)
+    parser.add_argument("--num-layers", type=int, default=4)
+    parser.add_argument("--encoder-variant", type=str, default="stacked_3x3_s2")
+    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--data-dir", type=str, 
+                        default=str(Path(__file__).parent / "data"))
+    
+    # Parallel training options
+    parser.add_argument("--parallel", action="store_true",
+                        help="Train multiple variants in parallel (for high-end GPUs)")
+    parser.add_argument("--compare-all", action="store_true",
+                        help="Compare all available encoder variants")
+    parser.add_argument("--variants", type=str, nargs='+',
+                        default=None,
+                        help="Specific variants to train in parallel")
+    
+    args = parser.parse_args()
+    
+    # Device
+    if args.device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = args.device
+    
+    # Determine which variants to train
+    if args.compare_all or args.parallel:
+        if args.variants:
+            variants = args.variants
+        else:
+            variants = list_available_variants()
+        
+        if args.parallel:
+            run_parallel_training(args, variants)
+        else:
+            run_sequential_high_throughput(args, variants)
+    else:
+        # Single variant training
+        print(f"Device: {device}")
+        if device == "cuda":
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"Encoder variant: {args.encoder_variant}")
+        
+        result = train_single_variant(args, args.encoder_variant)
+        
+        print(f"\n{'='*60}")
+        print(f"Final Results for {args.encoder_variant}")
+        print(f"{'='*60}")
+        print(f"Best CER: {result['best_cer']:.4f}")
+        print(f"Total params: {result['total_params']:,}")
 
 
 if __name__ == "__main__":
