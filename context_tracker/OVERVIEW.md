@@ -551,18 +551,115 @@ Based on review of current state-of-the-art methods (December 2024):
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Detailed Technical Comparison
+### Detailed Technical Comparison (Updated Dec 2024/2025)
 
-| Aspect | DeepSeek-OCR | Qwen-VL | InkSight | MyScript | **Ours** |
-|--------|--------------|---------|----------|----------|----------|
-| **Input** | Full image | Full image | Stroke coords | Strokes | **Stroke patches** |
-| **Attention** | Compressed dense | Full dense | RNN-based | Unknown | **Sparse (causal + isolated)** |
-| **Context repr** | Vision tokens | All patches | Coord embeddings | Unknown | **Text tokens (committed)** |
-| **Edit operation** | Full re-infer | Full re-infer | None explicit | Proprietary | **O(1) via KV-cache** |
-| **Memory scaling** | O(compressed) | O(patches) | O(strokes) | Unknown | **O(text tokens)** |
-| **Trajectory** | ❌ | ❌ | ❌ | ❌ | **✅ Logged** |
-| **Real-time** | ❌ Batch | ❌ Batch | ✅ Online | ✅ Online | **✅ Online** |
-| **Open source** | ✅ | ✅ | ✅ | ❌ | **✅ (proposed)** |
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  MAJOR PLAYERS: Google, Apple, Alibaba, DeepSeek, Commercial                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  GOOGLE (2024-2025):                                                            │
+│  ───────────────────                                                            │
+│  • Document AI + Gemini 2.0 Flash: Cloud OCR, 120 pages/min                    │
+│  • Enterprise OCR v2.1: Math OCR → LaTeX, checkbox detection                   │
+│  • ML Kit Digital Ink: On-device stroke recognition (coords-based)             │
+│  • InkSight: Stroke tokenizer, coordinate (x,y,t) encoding                     │
+│                                                                                  │
+│  APPLE (2024-2025):                                                             │
+│  ──────────────────                                                             │
+│  • Apple Intelligence 3B: On-device, KV-cache sharing, 2-bit quantization      │
+│  • Server PT-MoE: Parallel-Track Mixture-of-Experts transformer                │
+│  • Visual Intelligence: On-screen content interaction                          │
+│  • PencilKit + Scribble: Real-time handwriting → text (proprietary)            │
+│                                                                                  │
+│  KEY OBSERVATION:                                                               │
+│  Apple uses KV-cache sharing (similar to our idea!) but for LLM efficiency,    │
+│  NOT for O(1) edit operations on visual content.                               │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Aspect | Google DocAI | Google InkSight | Apple Intelligence | Qwen-VL | DeepSeek-OCR | MyScript | **Ours** |
+|--------|--------------|-----------------|-------------------|---------|--------------|----------|----------|
+| **Input** | Full image | Stroke coords | Full image | Full image | Full image | Strokes | **Stroke patches** |
+| **Architecture** | Gemini LLM | Ink tokenizer | 3B on-device / PT-MoE | Vision+LLM | Optical compress | Unknown | **Dual [CLS]+[INT]** |
+| **Attention** | Full (cloud) | Sequential | Full + KV-share | Full dense | Compressed | Unknown | **Sparse (causal+isolated)** |
+| **Context repr** | Vision tokens | Coord tokens | Multimodal | All patches | Vision tokens | Unknown | **Text tokens (committed)** |
+| **Edit ops** | Full re-infer | None | Full re-infer | Full re-infer | Full re-infer | Proprietary | **O(1) via KV-cache** |
+| **Memory** | O(patches) | O(coords) | O(patches) | O(patches) | O(compressed) | Unknown | **O(text tokens)** |
+| **Trajectory** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | **✅ Logged** |
+| **Math/LaTeX** | ✅ LaTeX output | ❌ | ❌ | ✅ | ✅ | ✅ | **✅ Native** |
+| **Real-time** | ❌ Batch | ✅ Online | ⚠️ On-device | ❌ Batch | ❌ Batch | ✅ Online | **✅ Online** |
+| **On-device** | ❌ Cloud | ✅ | ✅ | ❌ Cloud | ❌ Cloud | ✅ | **✅ Target** |
+| **Open source** | ❌ API only | ✅ | ❌ | ✅ | ✅ | ❌ | **✅ (proposed)** |
+
+### Key Differentiators vs Google & Apple
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  WHY WE'RE DIFFERENT FROM GOOGLE & APPLE                                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  vs GOOGLE (Document AI / InkSight):                                            │
+│  ───────────────────────────────────                                            │
+│                                                                                  │
+│  Google InkSight:                                                               │
+│    Input: stroke coordinates (x, y, t)                                          │
+│    ✗ Loses visual shape info (curves, loops, stroke width)                     │
+│    ✗ No explicit edit operations                                               │
+│    ✗ No reasoning trajectory                                                   │
+│                                                                                  │
+│  Ours:                                                                          │
+│    Input: stroke PATCHES (visual features along trajectory)                    │
+│    ✓ Preserves visual shape information                                        │
+│    ✓ Explicit ADD/REPLACE/INSERT operations                                    │
+│    ✓ Reasoning trajectory as first-class output                                │
+│                                                                                  │
+│  Google Document AI:                                                            │
+│    Processing: batch (cloud), full image re-encoding                           │
+│    ✗ No incremental updates                                                    │
+│    ✗ High latency for real-time editing                                        │
+│                                                                                  │
+│  Ours:                                                                          │
+│    Processing: incremental, O(1) edit via KV-cache                             │
+│    ✓ Real-time stroke-level feedback                                           │
+│    ✓ Efficient for interactive math editing                                    │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  vs APPLE (Intelligence / Scribble):                                            │
+│  ────────────────────────────────────                                           │
+│                                                                                  │
+│  Apple's approach:                                                              │
+│    • Proprietary (no published architecture)                                   │
+│    • General handwriting → text (Scribble)                                     │
+│    • Uses KV-cache sharing for LLM efficiency                                  │
+│    • NOT designed for math/LaTeX editing                                       │
+│                                                                                  │
+│  Ours:                                                                          │
+│    • Open architecture (academic contribution)                                 │
+│    • Specialized for math/LaTeX with structure awareness                       │
+│    • KV-cache for O(1) EDIT operations (not just efficiency)                   │
+│    • Reasoning trajectory for educational applications                         │
+│                                                                                  │
+│  KEY INSIGHT:                                                                   │
+│  Apple uses KV-cache sharing to reduce memory in LLM inference.                │
+│  We use KV-cache SELECTIVELY to enable O(1) edit operations.                   │
+│  Similar technique, DIFFERENT purpose!                                         │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  UNIQUE TO US (No equivalent in Google/Apple):                                  │
+│  ─────────────────────────────────────────────                                  │
+│                                                                                  │
+│  1. Symbolic commitment: strokes → text tokens → patches discarded             │
+│  2. Dual-token [CLS]+[INT]: isolated visual + semantic reasoning               │
+│  3. Stroke selection auxiliary loss: learned, not heuristic                    │
+│  4. Reasoning trajectory: edit sequence as cognitive signal                    │
+│  5. 2D RoPE for math: superscript vs subscript vs adjacent                     │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
 
 ### Novelty Analysis: What's Unique to Us?
 
