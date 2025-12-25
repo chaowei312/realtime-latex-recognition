@@ -136,14 +136,13 @@ class ExpressionComplexity:
     Mathematical expressions form trees where:
     - Depth = nesting level (fractions in fractions, nested scripts)
     - Breadth = number of terms at each level
-    - Special constructs add complexity multipliers
     
-    Difficulty Classification:
-    - easy: depth ≤ 2, score < 0.3
-    - medium: depth 3-4, score 0.3-0.6  
-    - hard: depth ≥ 5, score > 0.6
+    Depth is the primary complexity metric for curriculum learning:
+    - depth 1-2: Simple (single symbol, basic operations)
+    - depth 3-4: Moderate (nested fractions, integrals)
+    - depth 5+: Complex (deeply nested structures)
     """
-    depth: int                    # Maximum brace nesting depth
+    depth: int                    # Semantic tree depth (primary metric)
     num_braces: int               # Total brace pairs {}
     num_operators: int            # Binary operators (+, -, *, /)
     num_functions: int            # Functions (sin, cos, log, etc.)
@@ -153,12 +152,9 @@ class ExpressionComplexity:
     num_greek: int                # Greek letters
     num_environments: int         # LaTeX environments (begin/end)
     total_tokens: int             # Approximate token count
-    difficulty_score: float       # Normalized difficulty (0-1)
-    difficulty: str               # Classification: easy, medium, hard
     
     def __repr__(self):
-        return (f"Complexity(depth={self.depth}, score={self.difficulty_score:.2f}, "
-                f"difficulty='{self.difficulty}')")
+        return f"Complexity(depth={self.depth}, tokens={self.total_tokens})"
 
 
 def _compute_semantic_depth(latex: str) -> int:
@@ -263,8 +259,7 @@ def analyze_latex_complexity(latex: str) -> ExpressionComplexity:
         return ExpressionComplexity(
             depth=0, num_braces=0, num_operators=0, num_functions=0,
             num_fractions=0, num_scripts=0, num_special=0, num_greek=0,
-            num_environments=0, total_tokens=0, difficulty_score=0.0,
-            difficulty="easy"
+            num_environments=0, total_tokens=0,
         )
     
     # Compute semantic tree depth
@@ -322,26 +317,6 @@ def analyze_latex_complexity(latex: str) -> ExpressionComplexity:
     # Approximate token count
     total_tokens = len(re.findall(r'\\[a-zA-Z]+|[a-zA-Z0-9]|[+\-*/=<>^_{}]', latex))
     
-    # Compute difficulty score (0-1 scale)
-    # Weighted combination with semantic depth having high weight
-    score = (
-        0.30 * min(max_depth / 5, 1.0) +           # Semantic depth (normalized to 5)
-        0.15 * min(num_fractions / 3, 1.0) +       # Fractions
-        0.15 * min(num_scripts / 6, 1.0) +         # Scripts
-        0.15 * min(num_special / 2, 1.0) +         # Special constructs
-        0.10 * min(num_environments / 2, 1.0) +    # Environments
-        0.10 * min(num_operators / 5, 1.0) +       # Operators
-        0.05 * min(total_tokens / 50, 1.0)         # Token count
-    )
-    
-    # Classify difficulty
-    if max_depth <= 2 and score < 0.3:
-        difficulty = "easy"
-    elif max_depth >= 5 or score > 0.6:
-        difficulty = "hard"
-    else:
-        difficulty = "medium"
-    
     return ExpressionComplexity(
         depth=max_depth,
         num_braces=num_braces,
@@ -353,47 +328,43 @@ def analyze_latex_complexity(latex: str) -> ExpressionComplexity:
         num_greek=num_greek,
         num_environments=num_environments,
         total_tokens=total_tokens,
-        difficulty_score=round(score, 3),
-        difficulty=difficulty
     )
 
 
-def compute_case_difficulty(before_latex: str, after_latex: str) -> str:
+def compute_case_depth(before_latex: str, after_latex: str) -> int:
     """
-    Compute difficulty for an edit case based on before/after expressions.
+    Compute depth for an edit case based on before/after expressions.
     
-    Uses the more complex expression (usually after) to determine difficulty.
+    Returns the maximum depth between before and after expressions.
     """
     before_complexity = analyze_latex_complexity(before_latex)
     after_complexity = analyze_latex_complexity(after_latex)
-    
-    # Use the maximum complexity
-    if after_complexity.difficulty_score >= before_complexity.difficulty_score:
-        return after_complexity.difficulty
-    return before_complexity.difficulty
+    return max(before_complexity.depth, after_complexity.depth)
 
 
-def generate_by_difficulty(target_difficulty: str, base_generator, count: int = 50) -> List:
+def generate_by_depth_range(min_depth: int, max_depth: int, 
+                            base_generator, count: int = 50) -> List:
     """
-    Generate cases filtered by target difficulty.
+    Generate cases filtered by depth range.
     
     Args:
-        target_difficulty: "easy", "medium", or "hard"
+        min_depth: Minimum expression depth (inclusive)
+        max_depth: Maximum expression depth (inclusive)
         base_generator: Generator function that creates EditCase list
         count: Target number of cases
         
     Returns:
-        List of EditCase matching target difficulty
+        List of EditCase within depth range
     """
     # Generate more than needed to filter
     candidates = base_generator(count * 3)
     
-    # Filter by difficulty
+    # Filter by depth
     filtered = []
     for case in candidates:
-        actual_difficulty = compute_case_difficulty(case.before_latex, case.after_latex)
-        if actual_difficulty == target_difficulty:
-            case.difficulty = actual_difficulty  # Update with computed value
+        case_depth = compute_case_depth(case.before_latex, case.after_latex)
+        if min_depth <= case_depth <= max_depth:
+            case.depth = case_depth  # Update with computed value
             filtered.append(case)
         if len(filtered) >= count:
             break
@@ -447,10 +418,10 @@ class ExpressionBuilder:
         """Get lowercase Greek letters from config."""
         vocab = get_vocab_symbols()
         return vocab.get('greek_lower', [
-            '\\alpha', '\\beta', '\\gamma', '\\delta', '\\epsilon', '\\zeta',
-            '\\eta', '\\theta', '\\iota', '\\kappa', '\\lambda', '\\mu',
-            '\\nu', '\\xi', '\\pi', '\\rho', '\\sigma', '\\tau',
-            '\\upsilon', '\\phi', '\\chi', '\\psi', '\\omega'
+        '\\alpha', '\\beta', '\\gamma', '\\delta', '\\epsilon', '\\zeta',
+        '\\eta', '\\theta', '\\iota', '\\kappa', '\\lambda', '\\mu',
+        '\\nu', '\\xi', '\\pi', '\\rho', '\\sigma', '\\tau',
+        '\\upsilon', '\\phi', '\\chi', '\\psi', '\\omega'
         ])
     
     @classmethod
@@ -458,8 +429,8 @@ class ExpressionBuilder:
         """Get uppercase Greek letters from config."""
         vocab = get_vocab_symbols()
         return vocab.get('greek_upper', [
-            '\\Gamma', '\\Delta', '\\Theta', '\\Lambda', '\\Xi', 
-            '\\Pi', '\\Sigma', '\\Upsilon', '\\Phi', '\\Psi', '\\Omega'
+        '\\Gamma', '\\Delta', '\\Theta', '\\Lambda', '\\Xi', 
+        '\\Pi', '\\Sigma', '\\Upsilon', '\\Phi', '\\Psi', '\\Omega'
         ])
     
     @classmethod
@@ -485,10 +456,10 @@ class ExpressionBuilder:
         vocab = get_vocab_symbols()
         funcs = vocab.get('functions', [])
         common = [
-            '\\sin', '\\cos', '\\tan', '\\cot', '\\sec', '\\csc',
-            '\\log', '\\ln', '\\exp', '\\arcsin', '\\arccos', '\\arctan',
-            '\\sinh', '\\cosh', '\\tanh', '\\det', '\\dim', '\\ker'
-        ]
+        '\\sin', '\\cos', '\\tan', '\\cot', '\\sec', '\\csc',
+        '\\log', '\\ln', '\\exp', '\\arcsin', '\\arccos', '\\arctan',
+        '\\sinh', '\\cosh', '\\tanh', '\\det', '\\dim', '\\ker'
+    ]
         return [f for f in common if f in funcs] or common
     
     # Set operations (static - rarely in vocabulary)
@@ -1015,7 +986,7 @@ class ComplexExpressionCases:
                 before_latex=before_expr,
                 after_latex=after_expr,
                 edit_description=f"Add {add_type} to depth-{before_depth} expression",
-                difficulty=complexity.difficulty,
+                depth=complexity.depth,
                 metadata={'edit_symbols': edit_symbols, 'depth': complexity.depth}
             ))
         
@@ -1090,7 +1061,7 @@ class ComplexExpressionCases:
                     before_latex=expr,
                     after_latex=after_expr,
                     edit_description=f"Replace in depth-{depth} expression",
-                    difficulty=complexity.difficulty,
+                    depth=complexity.depth,
                     metadata={'edit_symbols': edit_symbols, 'depth': complexity.depth}
                 ))
         
@@ -1143,7 +1114,7 @@ class ComplexExpressionCases:
                 before_latex=with_empty,
                 after_latex=filled,
                 edit_description=f"Fill empty slot with {fill_content}",
-                difficulty=complexity.difficulty,
+                depth=complexity.depth,
                 metadata={'edit_symbols': [fill_content], 'depth': complexity.depth}
             ))
         
@@ -1264,7 +1235,7 @@ class TrainingExample:
     category: str
     subcategory: str
     is_initial_state: bool       # True if starting from empty
-    difficulty: str
+    depth: int                   # Semantic tree depth (primary complexity metric)
     
     def to_dict(self):
         d = asdict(self)
@@ -1283,7 +1254,7 @@ class EditCase:
     after_latex: str
     edit_description: str
     position_hint: Optional[str] = None  # e.g., "superscript", "after:x", "row:2"
-    difficulty: str = "medium"  # easy, medium, hard
+    depth: int = 1                       # Semantic tree depth
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self):
@@ -1332,7 +1303,7 @@ class EditCase:
             category=self.category,
             subcategory=self.subcategory,
             is_initial_state=(self.before_latex == "" or self.before_latex.strip() == ""),
-            difficulty=self.difficulty,
+            depth=self.depth,
         )
     
     def _extract_edit_symbol(self) -> str:
@@ -1343,13 +1314,13 @@ class EditCase:
         # For more complex cases, return the description hint
         return self.metadata.get("edit_symbol", "unknown")
     
-    def compute_difficulty(self) -> str:
+    def compute_depth(self) -> int:
         """
-        Compute difficulty based on tree-depth analysis of expressions.
-        Updates self.difficulty and returns the computed value.
+        Compute depth based on tree-depth analysis of expressions.
+        Updates self.depth and returns the computed value.
         """
-        self.difficulty = compute_case_difficulty(self.before_latex, self.after_latex)
-        return self.difficulty
+        self.depth = compute_case_depth(self.before_latex, self.after_latex)
+        return self.depth
     
     def get_complexity(self) -> Tuple[ExpressionComplexity, ExpressionComplexity]:
         """
@@ -1729,7 +1700,7 @@ class DiagramCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty=random.choice(["easy", "medium"]),
+                depth=random.randint(1, 3),
             ))
         
         return cases
@@ -1774,7 +1745,7 @@ class DiagramCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty=random.choice(["easy", "medium"]),
+                depth=random.randint(1, 3),
             ))
         
         return cases
@@ -1803,7 +1774,7 @@ class DiagramCases:
                 after_latex=after,
                 edit_description=desc,
                 position_hint=f"between:{nodes[0]}:{nodes[2]}",
-                difficulty="medium",
+                depth=3,
             ))
         
         return cases
@@ -1945,7 +1916,7 @@ class CalculusCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty=random.choice(["easy", "medium"]),
+                depth=random.randint(1, 3),
             ))
         
         return cases
@@ -1989,7 +1960,7 @@ class CalculusCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty=random.choice(["easy", "medium"]),
+                depth=random.randint(1, 3),
             ))
         
         return cases
@@ -2065,7 +2036,7 @@ class DiffEqCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="medium",
+                depth=3,
             ))
         
         return cases
@@ -2104,7 +2075,7 @@ class DiffEqCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="medium",
+                depth=3,
             ))
         
         return cases
@@ -2200,7 +2171,7 @@ class MatrixCases:
                 after_latex=after,
                 edit_description=desc,
                 position_hint=pos_hint if 'pos_hint' in dir() else None,
-                difficulty=random.choice(["easy", "medium", "hard"]),
+                depth=random.randint(1, 5),
             ))
         
         return cases
@@ -2245,7 +2216,7 @@ class MatrixCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty=random.choice(["easy", "medium"]),
+                depth=random.randint(1, 3),
             ))
         
         return cases
@@ -2356,7 +2327,7 @@ class SingleSymbolCases:
                 after_latex=symbol,
                 edit_description=desc,
                 position_hint="start",
-                difficulty="easy",
+                depth=1,
                 metadata={"atomic": True, "initial_state": True, "edit_symbol": symbol}
             ))
         
@@ -2454,7 +2425,7 @@ class SingleSymbolCases:
                 after_latex=after,
                 edit_description=desc,
                 position_hint=pos,
-                difficulty="easy",
+                depth=1,
                 metadata={"atomic": True, "symbol_count": 1}
             ))
         
@@ -2552,7 +2523,7 @@ class SingleSymbolCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="easy",
+                depth=1,
                 metadata={"atomic": True, "symbol_count": 1}
             ))
         
@@ -2614,7 +2585,7 @@ class SingleSymbolCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="easy",
+                depth=1,
                 metadata={"atomic": True, "calculus": True}
             ))
         
@@ -2670,7 +2641,7 @@ class SingleSymbolCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="easy",
+                depth=1,
                 metadata={"atomic": True, "matrix_element": True}
             ))
         
@@ -2716,7 +2687,7 @@ class SingleSymbolCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="easy",
+                depth=1,
                 metadata={"atomic": True, "arrow": True}
             ))
         
@@ -2784,7 +2755,7 @@ class SubSupCases:
                 after_latex=after,
                 edit_description=desc,
                 position_hint=pos,
-                difficulty="easy",
+                depth=1,
             ))
         
         return cases
@@ -2834,7 +2805,7 @@ class SubSupCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="easy",
+                depth=1,
             ))
         
         return cases
@@ -2885,7 +2856,7 @@ class GreekCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="easy",
+                depth=1,
             ))
         
         return cases
@@ -2931,7 +2902,7 @@ class GreekCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="easy",
+                depth=1,
             ))
         
         return cases
@@ -2980,7 +2951,7 @@ class FractionCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="medium",
+                depth=3,
             ))
         
         return cases
@@ -3009,7 +2980,7 @@ class FractionCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="easy",
+                depth=1,
             ))
         
         return cases
@@ -3041,7 +3012,7 @@ class IncompleteCases:
         cases = []
         case_id = 0
         
-        def add_case(before, after, symbol, subcat, diff="easy"):
+        def add_case(before, after, symbol, subcat, target_depth=1):
             nonlocal case_id
             cases.append(EditCase(
                 id=f"incomplete_fill_{case_id:04d}",
@@ -3051,7 +3022,7 @@ class IncompleteCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=f"Fill empty slot with {symbol}",
-                difficulty=diff,
+                depth=target_depth,
                 metadata={"edit_symbol": symbol},
             ))
             case_id += 1
@@ -3148,7 +3119,7 @@ class DeleteCases:
         cases = []
         case_id = 0
         
-        def add_case(before, after, deleted, subcat, diff="easy"):
+        def add_case(before, after, deleted, subcat, target_depth=1):
             nonlocal case_id
             cases.append(EditCase(
                 id=f"delete_{case_id:04d}",
@@ -3158,7 +3129,7 @@ class DeleteCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=f"Delete '{deleted}'",
-                difficulty=diff,
+                depth=target_depth,
                 metadata={"deleted_content": deleted},
             ))
             case_id += 1
@@ -3229,7 +3200,7 @@ class WrapCases:
         cases = []
         case_id = 0
         
-        def add_case(before, after, wrapper, subcat, diff="medium"):
+        def add_case(before, after, wrapper, subcat, target_depth=3):
             nonlocal case_id
             cases.append(EditCase(
                 id=f"wrap_{case_id:04d}",
@@ -3239,7 +3210,7 @@ class WrapCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=f"Wrap in {wrapper}",
-                difficulty=diff,
+                depth=target_depth,
                 metadata={"wrapper_type": wrapper},
             ))
             case_id += 1
@@ -3317,7 +3288,7 @@ class UnwrapCases:
         cases = []
         case_id = 0
         
-        def add_case(before, after, unwrapped, subcat, diff="medium"):
+        def add_case(before, after, unwrapped, subcat, target_depth=3):
             nonlocal case_id
             cases.append(EditCase(
                 id=f"unwrap_{case_id:04d}",
@@ -3327,7 +3298,7 @@ class UnwrapCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=f"Unwrap from {unwrapped}",
-                difficulty=diff,
+                depth=target_depth,
                 metadata={"removed_structure": unwrapped},
             ))
             case_id += 1
@@ -3435,7 +3406,7 @@ class AlgebraCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty=random.choice(["easy", "medium"]),
+                depth=random.randint(1, 3),
             ))
         
         return cases
@@ -3479,7 +3450,7 @@ class AlgebraCases:
                 before_latex=before,
                 after_latex=after,
                 edit_description=desc,
-                difficulty="easy",
+                depth=1,
             ))
         
         return cases
@@ -3656,80 +3627,78 @@ class CaseGenerator:
         random.shuffle(cases)
         return cases[:count]
     
-    def generate_by_difficulty(self, target_difficulty: str, count: int = 100,
-                               recompute: bool = True) -> List[EditCase]:
+    def generate_by_depth(self, min_depth: int = 1, max_depth: int = 5, 
+                          count: int = 100) -> List[EditCase]:
         """
-        Generate cases filtered by computed difficulty.
+        Generate cases filtered by depth range.
         
         Args:
-            target_difficulty: "easy", "medium", or "hard"
+            min_depth: Minimum expression depth (inclusive)
+            max_depth: Maximum expression depth (inclusive)
             count: Target number of cases
-            recompute: If True, recompute difficulty using tree-depth analysis
             
         Returns:
-            List of EditCase matching target difficulty
+            List of EditCase within depth range
         """
         # Generate more cases than needed (we'll filter)
         all_cases = self.generate_all(count_per_category=count // 5)
         
-        if recompute:
-            self.recompute_all_difficulties(all_cases)
+        # Compute depths and filter
+        for case in all_cases:
+            case.compute_depth()
         
-        # Filter by target difficulty
-        filtered = [c for c in all_cases if c.difficulty == target_difficulty]
+        filtered = [c for c in all_cases if min_depth <= c.depth <= max_depth]
         
         if len(filtered) < count:
             # Need more - generate additional
             extra = self.generate_all(count_per_category=count)
-            if recompute:
-                self.recompute_all_difficulties(extra)
-            filtered.extend([c for c in extra if c.difficulty == target_difficulty])
+            for case in extra:
+                case.compute_depth()
+            filtered.extend([c for c in extra if min_depth <= c.depth <= max_depth])
         
         random.shuffle(filtered)
         return filtered[:count]
     
     def generate_curriculum(self, total_count: int = 300,
-                           easy_pct: float = 0.4,
-                           medium_pct: float = 0.4,
-                           hard_pct: float = 0.2) -> List[EditCase]:
+                           depth_ranges: List[Tuple[int, int]] = None) -> List[EditCase]:
         """
-        Generate a curriculum-ordered dataset with specified difficulty distribution.
+        Generate a curriculum-ordered dataset by depth progression.
         
         Args:
             total_count: Total number of cases
-            easy_pct: Percentage of easy cases (default 40%)
-            medium_pct: Percentage of medium cases (default 40%)
-            hard_pct: Percentage of hard cases (default 20%)
+            depth_ranges: List of (min_depth, max_depth) tuples for progression
+                         Default: [(1, 2), (3, 4), (5, 7)] for easy->medium->hard
             
         Returns:
-            List of EditCase ordered by difficulty (easy -> medium -> hard)
+            List of EditCase ordered by depth (shallow -> deep)
         """
-        easy_count = int(total_count * easy_pct)
-        medium_count = int(total_count * medium_pct)
-        hard_count = total_count - easy_count - medium_count
+        if depth_ranges is None:
+            depth_ranges = [(1, 2), (3, 4), (5, 7)]
         
-        easy_cases = self.generate_by_difficulty("easy", easy_count)
-        medium_cases = self.generate_by_difficulty("medium", medium_count)
-        hard_cases = self.generate_by_difficulty("hard", hard_count)
+        cases_per_range = total_count // len(depth_ranges)
+        all_cases = []
         
-        # Curriculum order: easy first, then medium, then hard
-        return easy_cases + medium_cases + hard_cases
+        for min_d, max_d in depth_ranges:
+            cases = self.generate_by_depth(min_d, max_d, cases_per_range)
+            all_cases.extend(cases)
+        
+        return all_cases
     
     @staticmethod
-    def recompute_all_difficulties(cases: List[EditCase]) -> Dict[str, int]:
+    def recompute_all_depths(cases: List[EditCase]) -> Dict[int, int]:
         """
-        Recompute difficulties for all cases using tree-depth analysis.
+        Recompute depths for all cases using tree-depth analysis.
         
         Args:
             cases: List of EditCase to update
             
         Returns:
-            Dict with counts per difficulty level
+            Dict with counts per depth level
         """
-        counts = {"easy": 0, "medium": 0, "hard": 0}
+        counts = {}
         for case in cases:
-            case.compute_difficulty()
-            counts[case.difficulty] = counts.get(case.difficulty, 0) + 1
+            case.compute_depth()
+            counts[case.depth] = counts.get(case.depth, 0) + 1
         return counts
     
     @staticmethod
@@ -3738,21 +3707,19 @@ class CaseGenerator:
         Get complexity statistics for a set of cases.
         
         Returns:
-            Dict with min/max/avg depth, score distributions, etc.
+            Dict with min/max/avg depth and distribution.
         """
         if not cases:
             return {}
         
         depths = []
-        scores = []
-        difficulties = {"easy": 0, "medium": 0, "hard": 0}
+        depth_distribution = {}
         
         for case in cases:
             before_c, after_c = case.get_complexity()
-            max_c = after_c if after_c.difficulty_score >= before_c.difficulty_score else before_c
-            depths.append(max_c.depth)
-            scores.append(max_c.difficulty_score)
-            difficulties[max_c.difficulty] = difficulties.get(max_c.difficulty, 0) + 1
+            max_depth = max(before_c.depth, after_c.depth)
+            depths.append(max_depth)
+            depth_distribution[max_depth] = depth_distribution.get(max_depth, 0) + 1
         
         return {
             "depth": {
@@ -3760,12 +3727,7 @@ class CaseGenerator:
                 "max": max(depths),
                 "avg": sum(depths) / len(depths),
             },
-            "score": {
-                "min": min(scores),
-                "max": max(scores),
-                "avg": sum(scores) / len(scores),
-            },
-            "difficulty_distribution": difficulties,
+            "depth_distribution": depth_distribution,
             "total": len(cases),
         }
     
@@ -3852,13 +3814,13 @@ class CaseGenerator:
         for op, count in sorted(operations.items()):
             print(f"  {op:25} {count:5} cases")
         
-        # By difficulty
-        print("\nBy Difficulty:")
-        difficulties = {}
+        # By depth
+        print("\nBy Depth:")
+        depth_counts = {}
         for c in cases:
-            difficulties[c.difficulty] = difficulties.get(c.difficulty, 0) + 1
-        for diff, count in sorted(difficulties.items()):
-            print(f"  {diff:25} {count:5} cases")
+            depth_counts[c.depth] = depth_counts.get(c.depth, 0) + 1
+        for depth, count in sorted(depth_counts.items()):
+            print(f"  depth={depth:3}              {count:5} cases")
         
         # Complexity statistics (tree-depth based)
         if show_complexity:
@@ -3866,7 +3828,6 @@ class CaseGenerator:
             stats = self.get_complexity_stats(cases)
             if stats:
                 print(f"  Depth:    min={stats['depth']['min']}, max={stats['depth']['max']}, avg={stats['depth']['avg']:.1f}")
-                print(f"  Score:    min={stats['score']['min']:.3f}, max={stats['score']['max']:.3f}, avg={stats['score']['avg']:.3f}")
         
         print(f"\nTotal: {len(cases)} cases")
         print("=" * 60)
@@ -3898,13 +3859,14 @@ def main():
     parser.add_argument("--operation", "-op", default=None,
                        choices=["ADD", "REPLACE", "INSERT", "FILL", "DELETE", "WRAP", "UNWRAP"],
                        help="Generate only specific operation")
-    parser.add_argument("--difficulty", "-d", default=None,
-                       choices=["easy", "medium", "hard"],
-                       help="Generate only cases of specific difficulty (uses tree-depth analysis)")
+    parser.add_argument("--min-depth", type=int, default=None,
+                       help="Minimum expression depth (filter by depth range)")
+    parser.add_argument("--max-depth", type=int, default=None,
+                       help="Maximum expression depth (filter by depth range)")
     parser.add_argument("--curriculum", action="store_true",
-                       help="Generate curriculum-ordered dataset (easy -> medium -> hard)")
-    parser.add_argument("--recompute-difficulty", action="store_true",
-                       help="Recompute all difficulties using tree-depth analysis")
+                       help="Generate curriculum-ordered dataset (shallow -> deep)")
+    parser.add_argument("--recompute-depth", action="store_true",
+                       help="Recompute all depths using tree-depth analysis")
     parser.add_argument("--preview", "-p", type=int, default=5,
                        help="Number of sample cases to preview (default: 5)")
     parser.add_argument("--training-format", "-t", action="store_true",
@@ -3920,13 +3882,15 @@ def main():
     
     # Generate cases based on mode
     if args.curriculum:
-        # Curriculum learning: ordered by difficulty
-        print("Generating curriculum-ordered dataset...")
+        # Curriculum learning: ordered by depth
+        print("Generating curriculum-ordered dataset (shallow -> deep)...")
         cases = generator.generate_curriculum(total_count=args.count * 10)
-    elif args.difficulty:
-        # Filter by specific difficulty
-        print(f"Generating cases with difficulty: {args.difficulty}")
-        cases = generator.generate_by_difficulty(args.difficulty, args.count * 5)
+    elif args.min_depth is not None or args.max_depth is not None:
+        # Filter by depth range
+        min_d = args.min_depth if args.min_depth is not None else 1
+        max_d = args.max_depth if args.max_depth is not None else 10
+        print(f"Generating cases with depth range: {min_d}-{max_d}")
+        cases = generator.generate_by_depth(min_d, max_d, args.count * 5)
     elif args.category:
         cases = generator.generate_by_category(args.category, args.count * 3)
     elif args.operation:
@@ -3934,11 +3898,11 @@ def main():
     else:
         cases = generator.generate_all(args.count)
     
-    # Optionally recompute difficulties using tree-depth analysis
-    if args.recompute_difficulty:
-        print("Recomputing difficulties using tree-depth analysis...")
-        counts = CaseGenerator.recompute_all_difficulties(cases)
-        print(f"  Updated: easy={counts['easy']}, medium={counts['medium']}, hard={counts['hard']}")
+    # Optionally recompute depths using tree-depth analysis
+    if args.recompute_depth:
+        print("Recomputing depths using tree-depth analysis...")
+        counts = CaseGenerator.recompute_all_depths(cases)
+        print(f"  Updated depths: {dict(sorted(counts.items()))}")
     
     # Print statistics
     generator.print_statistics(cases)
@@ -3953,7 +3917,7 @@ def main():
             _, after_c = case.get_complexity()
             print(f"\n[{case.id}] {case.category}/{case.subcategory}")
             print(f"  Operation: {case.operation}")
-            print(f"  Difficulty: {case.difficulty} (depth={after_c.depth}, score={after_c.difficulty_score:.2f})")
+            print(f"  Depth: {case.depth} (computed: {after_c.depth})")
             print(f"  Before: {case.before_latex}")
             print(f"  After:  {case.after_latex}")
             print(f"  Desc:   {case.edit_description}")
