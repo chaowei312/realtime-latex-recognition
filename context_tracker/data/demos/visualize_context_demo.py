@@ -182,11 +182,16 @@ def render_strokes_to_array(
     symbol: str,
     size: tuple = (64, 64),
     num_strokes: int = None,  # None = complete
+    margin: float = 0.15,  # 15% margin on each side
 ) -> np.ndarray:
     """
     Render strokes to numpy array using the proper StrokeRenderer.
     
-    Uses anti-aliased PIL rendering for smooth strokes like in all_symbols_grid.png
+    Uses anti-aliased PIL rendering for smooth strokes like in all_symbols_grid.png.
+    
+    Args:
+        margin: Margin as fraction of canvas (0.15 = strokes use 70% of space,
+                leaving 15% on each side for thickness)
     """
     sym_data = loader.get_symbol(symbol)
     if sym_data is None:
@@ -209,13 +214,20 @@ def render_strokes_to_array(
         num_strokes = total
     num_strokes = min(num_strokes, total)
     
-    # Select random variations for each stroke
+    # Select random variations for each stroke and apply margin transform
+    # Scale strokes to fit within margin (0-1 -> margin to 1-margin)
+    scale_factor = 1.0 - 2 * margin
+    offset = margin
+    
     selected_strokes = []
     for stroke_name in stroke_names[:num_strokes]:
         variations = sym_data.strokes[stroke_name]
         stroke = random.choice(variations)
         # Interpolate for smooth curves
-        selected_strokes.append(stroke.interpolate(50))
+        stroke = stroke.interpolate(50)
+        # Scale down with margin: transform from [0,1] to [margin, 1-margin]
+        stroke = stroke.apply_transform(scale=scale_factor, translate=(offset, offset), center=(0, 0))
+        selected_strokes.append(stroke)
     
     # Render using PIL (anti-aliased)
     thickness = random.uniform(2.5, 3.5)
@@ -438,12 +450,9 @@ def visualize_context_with_strokes(
         bbox_w = x1 - x0
         bbox_h = y1 - y0
         
-        # Render stroke sized to match the symbol bbox (with small padding)
-        # For small symbols (superscripts), keep proportional size
-        padding = max(4, min(bbox_w, bbox_h) // 2)
-        stroke_w = bbox_w + padding * 2
-        stroke_h = bbox_h + padding * 2
-        stroke_size = max(stroke_w, stroke_h, 20)  # Minimum 20px for visibility
+        # Render stroke to FIT EXACTLY within the bbox
+        # Use the bbox size directly (with minimum for visibility)
+        stroke_size = max(bbox_w, bbox_h, 15)  # Minimum 15px for visibility
         
         stroke_arr = render_strokes_to_array(loader, replaced_char, size=(stroke_size, stroke_size))
         stroke_img = Image.fromarray(stroke_arr, mode='L')
@@ -451,12 +460,12 @@ def visualize_context_with_strokes(
         # White out just the original symbol area (tight)
         draw.rectangle([x0-2, y0-2, x1+2, y1+2], fill='white')
         
-        # Paste stroke centered on the symbol bbox
-        paste_x = x0 - padding
-        paste_y = y0 - padding
+        # Center the stroke on the symbol bbox
+        paste_x = x0 + (bbox_w - stroke_size) // 2
+        paste_y = y0 + (bbox_h - stroke_size) // 2
         
-        # Small jitter within the bbox
-        max_jitter = max(1, padding // 2)
+        # Small jitter (less than half bbox size)
+        max_jitter = max(1, min(bbox_w, bbox_h) // 4)
         jitter_x = random.randint(-max_jitter, max_jitter)
         jitter_y = random.randint(-max_jitter, max_jitter)
         paste_x += jitter_x
@@ -472,9 +481,10 @@ def visualize_context_with_strokes(
         
         img_with_strokes.paste(stroke_rgba, (paste_x, paste_y), stroke_rgba)
         
-        # Mark the replacement area with red box - TIGHT around symbol bbox
-        box_pad = 3
-        draw.rectangle([x0 - box_pad, y0 - box_pad, x1 + box_pad, y1 + box_pad], 
+        # Mark the replacement area - matches where strokes were placed
+        box_pad = 2
+        draw.rectangle([paste_x - box_pad, paste_y - box_pad, 
+                       paste_x + stroke_size + box_pad, paste_y + stroke_size + box_pad], 
                       outline='red', width=2)
     
     ax3.imshow(img_with_strokes)

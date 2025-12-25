@@ -284,7 +284,8 @@ class StrokeRenderer:
     def __init__(self, 
                  data_loader: Optional[StrokeDataLoader] = None,
                  canvas_size: int = 256,
-                 augmentation: Optional[AugmentationConfig] = None):
+                 augmentation: Optional[AugmentationConfig] = None,
+                 margin: float = 0.1):
         """
         Initialize renderer.
         
@@ -292,10 +293,13 @@ class StrokeRenderer:
             data_loader: StrokeDataLoader instance. Creates new one if None.
             canvas_size: Size of output canvas (square).
             augmentation: Augmentation configuration. Uses defaults if None.
+            margin: Margin as fraction of canvas (0.1 = strokes use 80% of canvas,
+                    leaving 10% on each side for line thickness). Default 0.1.
         """
         self.loader = data_loader or StrokeDataLoader()
         self.canvas_size = canvas_size
         self.augmentation = augmentation or AugmentationConfig()
+        self.margin = margin
     
     def render_symbol(self,
                       symbol: str,
@@ -338,6 +342,12 @@ class StrokeRenderer:
         
         # Collect all stroke points
         all_strokes: List[StrokeData] = []
+        
+        # Compute margin transform: scale strokes to fit within margin
+        # Original strokes are in [0,1] range, transform to [margin, 1-margin]
+        margin_scale = 1.0 - 2 * self.margin
+        margin_offset = self.margin
+        
         for i, stroke_name in enumerate(stroke_names):
             var_idx = variation_indices[i] if i < len(variation_indices) else 0
             var_idx = var_idx % len(sym_data.strokes[stroke_name])
@@ -346,6 +356,15 @@ class StrokeRenderer:
             
             # Apply augmentations
             stroke = stroke.interpolate(self.augmentation.interpolate_points)
+            
+            # Apply margin first (before augmentation rotation/scale)
+            stroke = stroke.apply_transform(
+                scale=margin_scale,
+                translate=(margin_offset, margin_offset),
+                center=(0, 0)
+            )
+            
+            # Then apply user augmentation (rotation, scale around center)
             stroke = stroke.apply_transform(
                 rotation=aug_params['rotation'],
                 scale=aug_params['scale'],
