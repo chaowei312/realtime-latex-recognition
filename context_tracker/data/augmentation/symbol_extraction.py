@@ -86,6 +86,9 @@ def _compute_ink_bbox_for_span(doc, page, span_bbox, render_scale: int = 10) -> 
     
     This is more accurate than span_bbox which includes font ascender/descender.
     
+    IMPORTANT: Clips exactly to span_bbox (no padding) to avoid picking up
+    pixels from neighboring characters in dense expressions like x^2.
+    
     Args:
         doc: PyMuPDF document
         page: Page object
@@ -93,24 +96,26 @@ def _compute_ink_bbox_for_span(doc, page, span_bbox, render_scale: int = 10) -> 
         render_scale: Render scale for precision (higher = more accurate but slower)
         
     Returns:
-        (x0, y0, x1, y1) in PDF points, or None if failed
+        (x0, y0, x1, y1) in PDF points, or span_bbox if failed
     """
     try:
         import fitz
         import numpy as np
         from PIL import Image
     except ImportError:
-        return None
+        return span_bbox
     
     try:
-        # Expand span_bbox slightly to ensure we capture all ink
-        pad = 2  # PDF points
+        # Clip EXACTLY to span_bbox - no padding to avoid neighboring chars
         clip_rect = fitz.Rect(
-            max(0, span_bbox[0] - pad),
-            max(0, span_bbox[1] - pad),
-            min(page.rect.width, span_bbox[2] + pad),
-            min(page.rect.height, span_bbox[3] + pad)
+            max(0, span_bbox[0]),
+            max(0, span_bbox[1]),
+            min(page.rect.width, span_bbox[2]),
+            min(page.rect.height, span_bbox[3])
         )
+        
+        if clip_rect.is_empty or clip_rect.width < 1 or clip_rect.height < 1:
+            return span_bbox
         
         # Render clip region at high resolution
         mat = fitz.Matrix(render_scale, render_scale)
@@ -140,7 +145,7 @@ def _compute_ink_bbox_for_span(doc, page, span_bbox, render_scale: int = 10) -> 
         
         return ink_bbox
         
-    except Exception as e:
+    except Exception:
         # Fall back to span bbox on any error
         return span_bbox
 
