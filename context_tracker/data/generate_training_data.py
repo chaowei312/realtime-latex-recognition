@@ -172,87 +172,181 @@ def generate_atomic_cases(
 def generate_commutative_diagrams(
     count: int = 20,
     include_labels: bool = True,
-    mixed_case: bool = True,
+    complexity_range: Tuple[int, int] = (1, 4),
+    add_position_jitter: bool = True,
+    jitter_range: float = 0.05,
     seed: int = None,
 ) -> List[Dict[str, Any]]:
     """
-    Generate commutative diagram LaTeX with metadata.
+    Generate commutative diagram LaTeX with complex nodes like H(X,Y)_t.
+    
+    Diagrams are ATOMIC cases (no "," separator needed).
+    Complexity is based on:
+    - Number of nodes and arrows
+    - Node label complexity (subscripts, parentheses, calligraphic)
+    - Arrow label complexity
     
     Args:
         count: Number of diagrams
-        include_labels: Include arrow labels (f, g, etc.)
-        mixed_case: Mix upper/lower case node labels
+        include_labels: Include arrow labels
+        complexity_range: (min, max) complexity/depth
+        add_position_jitter: Add position jitter for handwriting simulation
+        jitter_range: Jitter amount (normalized 0-1)
         seed: Random seed
         
     Returns:
-        List of diagram dicts with 'latex' and 'nodes' keys
+        List of diagram dicts (atomic cases)
         
     Example:
-        diagrams = generate_commutative_diagrams(count=10)
+        diagrams = generate_commutative_diagrams(count=50, complexity_range=(1, 4))
     """
     if seed is not None:
         random.seed(seed)
     
-    # Node pools
-    upper = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    lower = list("abcdefghijklmnopqrstuvwxyz")
-    greek = ["\\alpha", "\\beta", "\\gamma", "\\delta", "\\phi", "\\psi"]
-    labels = list("fghkmnpqrst") + greek
+    # Complex node label generators by depth
+    def simple_node():
+        """Depth 1: Simple letter - A, X, a, x"""
+        return random.choice(list("ABCDEFGHXYZabcdefghxyz"))
+    
+    def subscript_node():
+        """Depth 2: With subscript - A_t, X_0, H_n"""
+        base = random.choice(list("ABCDEFGHMNPQRXYZ"))
+        sub = random.choice(list("0123456789tnikmn"))
+        return f"{base}_{{{sub}}}"
+    
+    def function_node():
+        """Depth 2-3: Function form - F(X), H(A,B), f(x)"""
+        funcs = ["F", "G", "H", "f", "g", "h", "T", "S"]
+        args = ["X", "Y", "Z", "A", "B", "M", "N", "x", "y"]
+        func = random.choice(funcs)
+        if random.random() < 0.5:
+            arg = random.choice(args)
+            return f"{func}({arg})"
+        else:
+            arg1, arg2 = random.sample(args, 2)
+            return f"{func}({arg1},{arg2})"
+    
+    def complex_node():
+        r"""Depth 3-4: Complex - H(X,Y)_t, \mathcal{F}(M), \text{Hom}(A,B)"""
+        templates = [
+            # H(X,Y)_t
+            lambda: f"{random.choice('FGHS')}({random.choice('XYZ')},{random.choice('ABC')})_{{{random.choice('tnk')}}}",
+            # \mathcal{F}(M)
+            lambda: f"\\mathcal{{{random.choice('FGHCDO')}}}({random.choice('MNPXY')})",
+            # \text{Hom}(A,B)
+            lambda: f"\\text{{{random.choice(['Hom', 'Ext', 'Tor', 'End'])}}}({random.choice('ABCD')},{random.choice('MNPQ')})",
+            # X^n_m
+            lambda: f"{random.choice('XYZMNP')}^{{{random.choice('nmk')}}}_{{{random.choice('012ij')}}}",
+            # \tilde{X}_t
+            lambda: f"\\tilde{{{random.choice('XYZABC')}}}_{{{random.choice('tn0')}}}",
+            # \hat{f}(x)
+            lambda: f"\\hat{{{random.choice('fghpq')}}}({random.choice('xyz')})",
+        ]
+        return random.choice(templates)()
+    
+    # Arrow label generators
+    def simple_label():
+        return random.choice(list("fghkpqrstuv"))
+    
+    def greek_label():
+        return random.choice(["\\alpha", "\\beta", "\\gamma", "\\phi", "\\psi", "\\eta"])
+    
+    def complex_label():
+        templates = [
+            lambda: f"{random.choice('fgh')}_{{{random.choice('*0n')}}}",
+            lambda: f"{random.choice('fgh')}^{{{random.choice('*-1')}}}",
+            lambda: f"\\tilde{{{random.choice('fgh')}}}",
+            lambda: "\\sim",
+            lambda: "\\cong",
+        ]
+        return random.choice(templates)()
     
     diagrams = []
     
-    templates = [
-        # Simple arrow A -> B
-        lambda n, l: (
-            f"\\begin{{tikzcd}} {n[0]} \\arrow[r, \"{l[0]}\"] & {n[1]} \\end{{tikzcd}}",
-            [n[0], n[1]], [l[0]]
-        ),
-        # Chain A -> B -> C
-        lambda n, l: (
-            f"\\begin{{tikzcd}} {n[0]} \\arrow[r, \"{l[0]}\"] & {n[1]} \\arrow[r, \"{l[1]}\"] & {n[2]} \\end{{tikzcd}}",
-            [n[0], n[1], n[2]], [l[0], l[1]]
-        ),
-        # Triangle
-        lambda n, l: (
-            f"\\begin{{tikzcd}} {n[0]} \\arrow[r, \"{l[0]}\"] \\arrow[dr, \"{l[2]}\"'] & {n[1]} \\arrow[d, \"{l[1]}\"] \\\\ & {n[2]} \\end{{tikzcd}}",
-            [n[0], n[1], n[2]], [l[0], l[1], l[2]]
-        ),
-        # Square
-        lambda n, l: (
-            f"\\begin{{tikzcd}} {n[0]} \\arrow[r, \"{l[0]}\"] \\arrow[d, \"{l[2]}\"'] & {n[1]} \\arrow[d, \"{l[1]}\"] \\\\ {n[2]} \\arrow[r, \"{l[3]}\"'] & {n[3]} \\end{{tikzcd}}",
-            [n[0], n[1], n[2], n[3]], [l[0], l[1], l[2], l[3]]
-        ),
-        # Long chain A -> B -> C -> D
-        lambda n, l: (
-            f"\\begin{{tikzcd}} {n[0]} \\arrow[r, \"{l[0]}\"] & {n[1]} \\arrow[r, \"{l[1]}\"] & {n[2]} \\arrow[r, \"{l[2]}\"] & {n[3]} \\end{{tikzcd}}",
-            [n[0], n[1], n[2], n[3]], [l[0], l[1], l[2]]
-        ),
-    ]
-    
     for i in range(count):
-        # Select nodes
-        if mixed_case:
-            pool = upper + lower
-        else:
-            pool = upper
-        nodes = random.sample(pool, 4)
-        arrow_labels = random.sample(labels, 4) if include_labels else [""] * 4
+        # Determine complexity for this diagram
+        target_complexity = random.randint(*complexity_range)
         
-        # Pick template
-        template = random.choice(templates)
-        latex, used_nodes, used_labels = template(nodes, arrow_labels)
+        # Select node generator based on complexity
+        if target_complexity == 1:
+            node_gen = simple_node
+            label_gen = simple_label
+            num_nodes = random.choice([2, 2, 3])
+        elif target_complexity == 2:
+            node_gen = lambda: random.choice([simple_node, subscript_node])()
+            label_gen = lambda: random.choice([simple_label, greek_label])()
+            num_nodes = random.choice([2, 3, 3])
+        elif target_complexity == 3:
+            node_gen = lambda: random.choice([subscript_node, function_node])()
+            label_gen = lambda: random.choice([greek_label, complex_label])()
+            num_nodes = random.choice([3, 4, 4])
+        else:  # 4+
+            node_gen = lambda: random.choice([function_node, complex_node])()
+            label_gen = complex_label
+            num_nodes = random.choice([3, 4, 4])
         
-        # Create node position metadata (normalized)
+        # Generate nodes
+        nodes = [node_gen() for _ in range(4)]
+        labels = [label_gen() for _ in range(4)] if include_labels else [""] * 4
+        
+        # Select diagram structure
+        if num_nodes == 2:
+            # Simple arrow
+            latex = f"\\begin{{tikzcd}} {nodes[0]} \\arrow[r, \"{labels[0]}\"] & {nodes[1]} \\end{{tikzcd}}"
+            used_nodes = nodes[:2]
+            used_labels = labels[:1]
+            structure = "arrow"
+        elif num_nodes == 3:
+            if random.random() < 0.5:
+                # Chain
+                latex = f"\\begin{{tikzcd}} {nodes[0]} \\arrow[r, \"{labels[0]}\"] & {nodes[1]} \\arrow[r, \"{labels[1]}\"] & {nodes[2]} \\end{{tikzcd}}"
+                used_nodes = nodes[:3]
+                used_labels = labels[:2]
+                structure = "chain"
+            else:
+                # Triangle
+                latex = f"\\begin{{tikzcd}} {nodes[0]} \\arrow[r, \"{labels[0]}\"] \\arrow[dr, \"{labels[2]}\"'] & {nodes[1]} \\arrow[d, \"{labels[1]}\"] \\\\ & {nodes[2]} \\end{{tikzcd}}"
+                used_nodes = nodes[:3]
+                used_labels = labels[:3]
+                structure = "triangle"
+        else:  # 4 nodes
+            if random.random() < 0.5:
+                # Square
+                latex = f"\\begin{{tikzcd}} {nodes[0]} \\arrow[r, \"{labels[0]}\"] \\arrow[d, \"{labels[2]}\"'] & {nodes[1]} \\arrow[d, \"{labels[1]}\"] \\\\ {nodes[2]} \\arrow[r, \"{labels[3]}\"'] & {nodes[3]} \\end{{tikzcd}}"
+                used_nodes = nodes[:4]
+                used_labels = labels[:4]
+                structure = "square"
+            else:
+                # Long chain
+                latex = f"\\begin{{tikzcd}} {nodes[0]} \\arrow[r, \"{labels[0]}\"] & {nodes[1]} \\arrow[r, \"{labels[1]}\"] & {nodes[2]} \\arrow[r, \"{labels[2]}\"] & {nodes[3]} \\end{{tikzcd}}"
+                used_nodes = nodes[:4]
+                used_labels = labels[:3]
+                structure = "long_chain"
+        
+        # Create node position metadata with jitter
         node_positions = []
         for j, node in enumerate(used_nodes):
-            # Approximate position based on typical tikzcd layout
             col = j % 2
             row = j // 2
+            
+            base_center = (0.25 + col * 0.5, 0.35 + row * 0.3)
+            base_bbox = (base_center[0] - 0.1, base_center[1] - 0.1,
+                        base_center[0] + 0.1, base_center[1] + 0.1)
+            
+            if add_position_jitter:
+                jitter = (random.uniform(-jitter_range, jitter_range),
+                         random.uniform(-jitter_range, jitter_range))
+            else:
+                jitter = (0, 0)
+            
+            stroke_center = (base_center[0] + jitter[0], base_center[1] + jitter[1])
+            
             node_positions.append({
                 'symbol': node,
-                'latex_center': (0.3 + col * 0.4, 0.3 + row * 0.4),
-                'latex_bbox': (0.2 + col * 0.4, 0.2 + row * 0.4, 
-                              0.4 + col * 0.4, 0.4 + row * 0.4),
+                'latex_center': base_center,
+                'latex_bbox': base_bbox,
+                'stroke_center': stroke_center,
+                'position_offset': jitter,
             })
         
         diagrams.append({
@@ -261,10 +355,107 @@ def generate_commutative_diagrams(
             'nodes': used_nodes,
             'arrow_labels': used_labels if include_labels else [],
             'node_positions': node_positions,
+            'structure': structure,
+            'depth': target_complexity,  # Complexity as depth (like atomic cases)
             'type': 'commutative_diagram',
         })
     
     return diagrams
+
+
+def visualize_position_jitter(
+    examples: List[Dict[str, Any]],
+    output_path: str = None,
+    show: bool = True,
+) -> None:
+    """
+    Visualize position jittering for training examples.
+    
+    Shows:
+    - LaTeX bbox (blue rectangle)
+    - Stroke center (red dot)
+    - Position offset (arrow)
+    
+    Args:
+        examples: List of examples with position info
+        output_path: Save visualization to file
+        show: Display matplotlib figure
+        
+    Example:
+        contexts = generate_compositional_context(count=10)
+        visualize_position_jitter(contexts)
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+    except ImportError:
+        print("matplotlib required for visualization")
+        return
+    
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    for idx, ax in enumerate(axes):
+        if idx >= len(examples):
+            ax.axis('off')
+            continue
+        
+        ex = examples[idx]
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_aspect('equal')
+        ax.invert_yaxis()
+        ax.set_title(f"Example {idx}: {ex.get('type', 'unknown')}", fontsize=10)
+        
+        # Get positions from example
+        positions = ex.get('symbol_positions') or ex.get('node_positions', [])
+        
+        for pos in positions:
+            # LaTeX bbox (blue)
+            if 'latex_bbox' in pos:
+                bbox = pos['latex_bbox']
+                rect = patches.Rectangle(
+                    (bbox[0], bbox[1]), bbox[2]-bbox[0], bbox[3]-bbox[1],
+                    linewidth=2, edgecolor='blue', facecolor='lightblue', alpha=0.3
+                )
+                ax.add_patch(rect)
+            
+            # LaTeX center (blue dot)
+            if 'latex_center' in pos:
+                lc = pos['latex_center']
+                ax.plot(lc[0], lc[1], 'bo', markersize=8, label='LaTeX center')
+            
+            # Stroke center (red dot)
+            if 'stroke_center' in pos:
+                sc = pos['stroke_center']
+                ax.plot(sc[0], sc[1], 'ro', markersize=10, label='Stroke center')
+                
+                # Arrow showing offset
+                if 'latex_center' in pos:
+                    lc = pos['latex_center']
+                    ax.annotate('', xy=(sc[0], sc[1]), xytext=(lc[0], lc[1]),
+                               arrowprops=dict(arrowstyle='->', color='green', lw=2))
+            
+            # Label
+            symbol = pos.get('symbol') or pos.get('chunk_latex', '')[:10]
+            if 'stroke_center' in pos:
+                ax.text(pos['stroke_center'][0], pos['stroke_center'][1] - 0.05, 
+                       symbol[:15], fontsize=8, ha='center')
+        
+        ax.grid(True, alpha=0.3)
+    
+    plt.suptitle('Position Jittering Visualization\nBlue=LaTeX bbox, Red=Stroke center, Green=Offset', 
+                fontsize=12)
+    plt.tight_layout()
+    
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"Saved visualization to {output_path}")
+    
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
 def generate_compositional_context(
