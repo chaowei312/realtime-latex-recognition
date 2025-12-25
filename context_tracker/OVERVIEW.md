@@ -416,6 +416,180 @@ The **O(n³) → O(n²)** reduction comes from:
 | **Visual quality** | Diluted by irrelevant areas | Focused on edit |
 | **Latency** | Grows with expression | **Constant ~10ms** |
 
+### Sparse Ink Storage for Efficient Re-Embedding
+
+Instead of storing full bounding box masks, we store **only ink pixels** (sparse set):
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  SPARSE INK STORAGE (No Whitespace)                                              │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  WHAT WE STORE PER SYMBOL:                                                       │
+│  ══════════════════════════                                                      │
+│                                                                                  │
+│  NOT this (dense mask):          THIS (sparse ink only):                        │
+│  ┌─────────────────────┐         ┌─────────────────────────────────────────┐    │
+│  │ 0 0 0 0 0 0 0 0 0 0 │         │ symbol: "x"                             │    │
+│  │ 0 0 1 0 0 0 0 1 0 0 │         │ ink_pixels: {(2,1),(7,1),(3,2),(6,2),   │    │
+│  │ 0 0 0 1 0 0 1 0 0 0 │         │              (4,3),(5,3),(3,4),(6,4),   │    │
+│  │ 0 0 0 0 1 1 0 0 0 0 │         │              (2,5),(7,5)}               │    │
+│  │ 0 0 0 1 0 0 1 0 0 0 │         │ bbox: (2, 1, 7, 5)                      │    │
+│  │ 0 0 1 0 0 0 0 1 0 0 │         │ stroke_ids: [3, 4]                      │    │
+│  │ 0 0 0 0 0 0 0 0 0 0 │         └─────────────────────────────────────────┘    │
+│  └─────────────────────┘                                                        │
+│   Full 10×7 = 70 values          Only 12 coordinates!                           │
+│   (mostly zeros)                 + bbox + stroke_ids                            │
+│                                                                                  │
+│  MEMORY: O(num_ink_pixels) not O(bbox_area)                                     │
+│  Typical symbol: 50-200 ink pixels × 4 bytes = 200-800 bytes                    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Edit Operations = Set Operations on Ink Pixels
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  EDIT = SIMPLE SET OPERATIONS                                                    │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ADD (overlay new stroke on existing symbol):                                    │
+│  ═════════════════════════════════════════════                                   │
+│                                                                                  │
+│    result = old_ink ∪ new_stroke_ink                                            │
+│                                                                                  │
+│    Example: Add bar to "x" → "x̄"                                                │
+│    ┌──────────┐     ┌──────────┐     ┌──────────┐                               │
+│    │  ╲   ╱   │  ∪  │ ───────  │  =  │ ───────  │                               │
+│    │   ╲ ╱    │     │          │     │  ╲   ╱   │                               │
+│    │    ╳     │     │          │     │   ╲ ╱    │                               │
+│    │   ╱ ╲    │     │          │     │    ╳     │                               │
+│    │  ╱   ╲   │     │          │     │   ╱ ╲    │                               │
+│    └──────────┘     └──────────┘     └──────────┘                               │
+│       old_ink       new_stroke         result                                    │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  ERASE (remove region, user uses eraser tool):                                   │
+│  ═════════════════════════════════════════════                                   │
+│                                                                                  │
+│    result = old_ink - erased_region                                             │
+│                                                                                  │
+│    Example: Erase bottom half of "x"                                            │
+│    ┌──────────┐     ┌──────────┐     ┌──────────┐                               │
+│    │  ╲   ╱   │  -  │          │  =  │  ╲   ╱   │                               │
+│    │   ╲ ╱    │     │    ╳     │     │   ╲ ╱    │                               │
+│    │    ╳     │     │   ╱ ╲    │     │          │                               │
+│    │   ╱ ╲    │     │  ╱   ╲   │     │          │                               │
+│    │  ╱   ╲   │     └──────────┘     └──────────┘                               │
+│    └──────────┘     erase_region       result                                    │
+│       old_ink        (bottom)        (top only)                                  │
+│                                                                                  │
+│  ────────────────────────────────────────────────────────────────────────────   │
+│                                                                                  │
+│  REPLACE (erase old + draw new):                                                 │
+│  ═══════════════════════════════                                                 │
+│                                                                                  │
+│    result = (old_ink - erased) ∪ new_stroke                                     │
+│                                                                                  │
+│    Example: Change "x" to "y"                                                   │
+│    ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐              │
+│    │  ╲   ╱   │  -  │  ╲   ╱   │  ∪  │    |     │  =  │    |     │              │
+│    │   ╲ ╱    │     │   ╲ ╱    │     │    \/    │     │    \/    │              │
+│    │    ╳     │     │    ╳     │     │    |     │     │    |     │              │
+│    │   ╱ ╲    │     │   ╱ ╲    │     │          │     │          │              │
+│    │  ╱   ╲   │     │  ╱   ╲   │     │          │     │          │              │
+│    └──────────┘     └──────────┘     └──────────┘     └──────────┘              │
+│       old "x"        erase all        new "y"          result                    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Re-Encoding Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  FROM SPARSE INK TO CONV2D EMBEDDING                                             │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  STEP 1: Apply set operation                                                     │
+│  ───────────────────────────                                                     │
+│                                                                                  │
+│    new_ink = (old_ink - erased) ∪ new_stroke                                    │
+│    new_ink = {(4,0),(4,1),(4,2),(3,2),(5,2),(4,3),...}  # "y" pixels           │
+│                                                                                  │
+│  STEP 2: Expand bbox if needed                                                   │
+│  ─────────────────────────────                                                   │
+│                                                                                  │
+│    old_bbox = (2, 1, 7, 5)   # original "x" bbox                                │
+│    new_bbox = union(old_bbox, bounding_box(new_ink))                            │
+│             = (2, 0, 7, 5)   # extended for new strokes                         │
+│                                                                                  │
+│  STEP 3: Render sparse → dense (only for Conv2D)                                │
+│  ───────────────────────────────────────────────                                 │
+│                                                                                  │
+│    def render_for_conv(ink_pixels: set, bbox: tuple) -> np.ndarray:             │
+│        x1, y1, x2, y2 = bbox                                                    │
+│        canvas = np.zeros((y2-y1, x2-x1), dtype=float32)                         │
+│        for (x, y) in ink_pixels:                                                │
+│            canvas[y - y1, x - x1] = 1.0                                         │
+│        return canvas                                                             │
+│                                                                                  │
+│  STEP 4: Conv2D → new embeddings                                                │
+│  ───────────────────────────────                                                 │
+│                                                                                  │
+│    crop_tensor = torch.tensor(canvas).unsqueeze(0).unsqueeze(0)                 │
+│    new_embeddings = conv_encoder(crop_tensor)  # Same encoder as original      │
+│                                                                                  │
+│  STEP 5: Update KV-cache at symbol position                                      │
+│  ───────────────────────────────────────────                                     │
+│                                                                                  │
+│    kv_cache[symbol_position] = new_embeddings                                   │
+│    # O(1) update, no full re-inference!                                         │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Storage Structure
+
+```python
+class SparseInkStorage:
+    """Store only ink pixels per recognized symbol."""
+    
+    symbols: Dict[str, SymbolData] = {
+        "sym_001": {
+            "text": "x",                          # Recognized LaTeX
+            "ink": {(2,1),(7,1),(3,2),...},       # Sparse ink coordinates
+            "bbox": (2, 1, 7, 5),                 # Bounding box
+            "stroke_ids": [3, 4],                 # Contributing strokes
+            "kv_position": 0,                     # Position in KV-cache
+        },
+        "sym_002": {
+            "text": "^{2}",
+            "ink": {(45,5),(46,5),...},
+            "bbox": (45, 5, 55, 15),
+            "stroke_ids": [5],
+            "kv_position": 1,
+        },
+        # ...
+    }
+    
+    def edit(self, sym_id: str, erase: set = None, add: set = None) -> set:
+        old = self.symbols[sym_id]["ink"]
+        return (old - (erase or set())) | (add or set())
+```
+
+### When Sparse Ink Storage Enables
+
+| Use Case | Without Ink Storage | With Sparse Ink |
+|----------|---------------------|-----------------|
+| **Full replacement** | ✅ Just new strokes | ✅ (old - all) ∪ new |
+| **Add accent (x → x̄)** | ❌ Can't blend | ✅ old ∪ bar_stroke |
+| **Partial erase** | ❌ No old ink access | ✅ old - erased |
+| **Undo last stroke** | ❌ Full re-infer | ✅ Remove stroke, re-encode |
+| **Fix part of symbol** | ❌ Model sees only new | ✅ (old - fix_area) ∪ fix |
+
 ### Data Flow Summary
 
 ```
