@@ -45,8 +45,6 @@ class ExpressionChunk:
     id: str
     latex: str
     depth: int
-    difficulty: str
-    difficulty_score: float
     category: str
     subcategory: str = ""
     
@@ -373,8 +371,6 @@ class ExpressionChunk:
             "id": self.id,
             "latex": self.latex,
             "depth": self.depth,
-            "difficulty": self.difficulty,
-            "difficulty_score": self.difficulty_score,
             "category": self.category,
             "subcategory": self.subcategory,
             "editable_positions": self.editable_positions,
@@ -389,8 +385,6 @@ class ExpressionChunk:
             id=data["id"],
             latex=data["latex"],
             depth=data["depth"],
-            difficulty=data["difficulty"],
-            difficulty_score=data["difficulty_score"],
             category=data["category"],
             subcategory=data.get("subcategory", ""),
             editable_positions=[tuple(p) for p in data.get("editable_positions", [])],
@@ -412,14 +406,12 @@ class ChunkPool:
     The pool enables:
     - Sampling chunks by specific depth
     - Sampling chunks by depth range
-    - Balanced sampling across difficulties
     - Persistence (save/load)
     """
     chunks: List[ExpressionChunk] = field(default_factory=list)
     
     # Indices for fast lookup
     _by_depth: Dict[int, List[int]] = field(default_factory=dict, repr=False)
-    _by_difficulty: Dict[str, List[int]] = field(default_factory=dict, repr=False)
     _by_category: Dict[str, List[int]] = field(default_factory=dict, repr=False)
     
     def __post_init__(self):
@@ -428,7 +420,6 @@ class ChunkPool:
     def _rebuild_indices(self):
         """Rebuild lookup indices."""
         self._by_depth = {}
-        self._by_difficulty = {}
         self._by_category = {}
         
         for i, chunk in enumerate(self.chunks):
@@ -436,11 +427,6 @@ class ChunkPool:
             if chunk.depth not in self._by_depth:
                 self._by_depth[chunk.depth] = []
             self._by_depth[chunk.depth].append(i)
-            
-            # By difficulty
-            if chunk.difficulty not in self._by_difficulty:
-                self._by_difficulty[chunk.difficulty] = []
-            self._by_difficulty[chunk.difficulty].append(i)
             
             # By category
             if chunk.category not in self._by_category:
@@ -456,10 +442,6 @@ class ChunkPool:
         if chunk.depth not in self._by_depth:
             self._by_depth[chunk.depth] = []
         self._by_depth[chunk.depth].append(idx)
-        
-        if chunk.difficulty not in self._by_difficulty:
-            self._by_difficulty[chunk.difficulty] = []
-        self._by_difficulty[chunk.difficulty].append(idx)
         
         if chunk.category not in self._by_category:
             self._by_category[chunk.category] = []
@@ -486,14 +468,6 @@ class ChunkPool:
         sampled = random.sample(eligible, min(count, len(eligible)))
         return [self.chunks[i] for i in sampled]
     
-    def sample_by_difficulty(self, difficulty: str, count: int = 1) -> List[ExpressionChunk]:
-        """Sample chunks of a specific difficulty."""
-        if difficulty not in self._by_difficulty:
-            return []
-        indices = self._by_difficulty[difficulty]
-        sampled = random.sample(indices, min(count, len(indices)))
-        return [self.chunks[i] for i in sampled]
-    
     def sample_random(self, count: int = 1, 
                       exclude_ids: Optional[set] = None) -> List[ExpressionChunk]:
         """Sample random chunks, optionally excluding specific IDs."""
@@ -514,7 +488,6 @@ class ChunkPool:
             "total_chunks": len(self.chunks),
             "rendered_chunks": rendered_count,
             "by_depth": {d: len(indices) for d, indices in sorted(self._by_depth.items())},
-            "by_difficulty": {d: len(indices) for d, indices in self._by_difficulty.items()},
             "by_category": {c: len(indices) for c, indices in self._by_category.items()},
             "depth_range": (min(self._by_depth.keys()), max(self._by_depth.keys())) if self._by_depth else (0, 0),
         }
@@ -702,8 +675,6 @@ class ChunkPool:
                 id=f"chunk_{case.id}",
                 latex=case.after_latex,
                 depth=complexity.depth,
-                difficulty=complexity.difficulty,
-                difficulty_score=complexity.difficulty_score,
                 category=case.category,
                 subcategory=case.subcategory,
                 metadata={

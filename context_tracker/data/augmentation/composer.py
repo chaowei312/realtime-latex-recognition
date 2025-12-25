@@ -231,7 +231,8 @@ class ContextComposer:
     def compose_batch(self,
                       num_examples: int,
                       target_depth: Optional[int] = None,
-                      target_difficulty: Optional[str] = None,
+                      min_depth: Optional[int] = None,
+                      max_depth: Optional[int] = None,
                       num_context_chunks: int = 3,
                       context_strategy: str = "diverse",
                       separator: str = " \\quad ",
@@ -241,8 +242,9 @@ class ContextComposer:
         
         Args:
             num_examples: Number of examples to generate
-            target_depth: If specified, only use targets of this depth
-            target_difficulty: If specified, only use targets of this difficulty
+            target_depth: If specified, only use targets of exact depth
+            min_depth: If specified, minimum target depth
+            max_depth: If specified, maximum target depth
             num_context_chunks: Context chunks per example
             context_strategy: How to select context
             separator: LaTeX separator
@@ -264,8 +266,10 @@ class ContextComposer:
             for _ in range(max_retries):
                 if target_depth is not None:
                     targets = self.pool.sample_by_depth(target_depth, 5)
-                elif target_difficulty is not None:
-                    targets = self.pool.sample_by_difficulty(target_difficulty, 5)
+                elif min_depth is not None or max_depth is not None:
+                    min_d = min_depth if min_depth is not None else 1
+                    max_d = max_depth if max_depth is not None else 10
+                    targets = self.pool.sample_by_depth_range(min_d, max_d, 5)
                 else:
                     targets = self.pool.sample_random(5)
                 
@@ -300,55 +304,49 @@ class ContextComposer:
                            total_examples: int,
                            min_context: int = 1,
                            max_context: int = 5,
+                           depth_distribution: Optional[Dict[Tuple[int, int], float]] = None,
                            separator: str = " \\quad ") -> List[ComposedTrainingExample]:
         """
-        Generate curriculum-ordered examples with increasing complexity.
+        Generate curriculum-ordered examples with increasing complexity by depth.
         
         Progression:
-        1. Easy targets, few context chunks
-        2. Medium targets, moderate context
-        3. Hard targets, many context chunks
+        1. Shallow depths (1-2), few context chunks
+        2. Medium depths (3-4), moderate context
+        3. Deep (5+), many context chunks
         
         Args:
             total_examples: Total number of examples
             min_context: Minimum context chunks
             max_context: Maximum context chunks
+            depth_distribution: Optional {(min_depth, max_depth): percentage}
             separator: LaTeX separator
             
         Returns:
-            List ordered by increasing complexity
+            List ordered by increasing depth
         """
         examples = []
         
-        # Phase 1: Easy (40%)
-        easy_count = int(total_examples * 0.4)
-        examples.extend(self.compose_batch(
-            num_examples=easy_count,
-            target_difficulty="easy",
-            num_context_chunks=min_context,
-            context_strategy="random",
-            separator=separator,
-        ))
+        if depth_distribution is None:
+            # Default: 40% shallow, 40% medium, 20% deep
+            depth_distribution = {
+                (1, 2): 0.4,   # Shallow
+                (3, 4): 0.4,   # Medium
+                (5, 10): 0.2,  # Deep
+            }
         
-        # Phase 2: Medium (40%)
-        medium_count = int(total_examples * 0.4)
-        examples.extend(self.compose_batch(
-            num_examples=medium_count,
-            target_difficulty="medium",
-            num_context_chunks=(min_context + max_context) // 2,
-            context_strategy="diverse",
-            separator=separator,
-        ))
-        
-        # Phase 3: Hard (20%)
-        hard_count = total_examples - easy_count - medium_count
-        examples.extend(self.compose_batch(
-            num_examples=hard_count,
-            target_difficulty="hard",
-            num_context_chunks=max_context,
-            context_strategy="diverse",
-            separator=separator,
-        ))
+        for (min_d, max_d), pct in sorted(depth_distribution.items()):
+            count = int(total_examples * pct)
+            # Scale context with depth
+            ctx_chunks = min_context + int((max_context - min_context) * (min_d / 5))
+            
+            examples.extend(self.compose_batch(
+                num_examples=count,
+                min_depth=min_d,
+                max_depth=max_d,
+                num_context_chunks=min(ctx_chunks, max_context),
+                context_strategy="diverse" if min_d >= 3 else "random",
+                separator=separator,
+            ))
         
         return examples
     

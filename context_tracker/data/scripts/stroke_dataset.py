@@ -122,7 +122,7 @@ class EditExample:
     
     # Metadata
     category: str
-    difficulty: str
+    depth: int = 1
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -134,7 +134,7 @@ class EditExample:
             'canvas_shape': list(self.canvas.shape),
             'symbol_metadata': self.symbol_metadata,
             'category': self.category,
-            'difficulty': self.difficulty,
+            'depth': self.depth,
         }
 
 
@@ -164,7 +164,7 @@ class TrainingExample:
     # Training metadata
     is_complete: bool             # True if all strokes for symbol(s) drawn
     category: str
-    difficulty: str
+    depth: int = 1
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -177,7 +177,7 @@ class TrainingExample:
             'symbol_bboxes': self.symbol_bboxes,
             'is_complete': self.is_complete,
             'category': self.category,
-            'difficulty': self.difficulty,
+            'depth': self.depth,
         }
 
 
@@ -440,7 +440,7 @@ class StrokeDatasetGenerator:
                 canvas=canvas,
                 symbol_metadata=symbol_metadata,
                 category=case.category,
-                difficulty=case.difficulty,
+                depth=case.depth,
             )
             examples.append(example)
         
@@ -514,7 +514,7 @@ class StrokeDatasetGenerator:
                 before_latex = case.before_latex
                 after_latex = case.after_latex
                 category = case.category
-                difficulty = case.difficulty
+                depth = case.depth
                 edit_symbols = self._extract_edit_symbols(case)
             else:
                 # Random generation
@@ -524,7 +524,7 @@ class StrokeDatasetGenerator:
                                              k=random.randint(1, 3) if random.random() < multi_symbol_ratio else 1)
                 after_latex = before_latex + ''.join(edit_symbols)
                 category = 'random'
-                difficulty = 'easy'
+                depth = 1
             
             # Filter to available symbols
             edit_symbols = [s for s in edit_symbols if s in self.available_symbols]
@@ -602,7 +602,7 @@ class StrokeDatasetGenerator:
                 symbol_bboxes=symbol_bboxes,
                 is_complete=is_complete,
                 category=category,
-                difficulty=difficulty,
+                depth=depth,
             )
             examples.append(example)
         
