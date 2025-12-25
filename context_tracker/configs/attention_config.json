@@ -1,0 +1,191 @@
+{
+  "description": "Configurable attention mask patterns for multimodal transformer",
+  "version": "1.0",
+  
+  "attention_patterns": {
+    "pattern_A_isolated_patches": {
+      "name": "Isolated Patches (Dual-Token Design)",
+      "description": "Patches attend only within stroke group, [CLS] aggregates, [INT] reasons",
+      "modalities": {
+        "text_context": {
+          "attends_to": ["text_context"],
+          "mask_type": "causal",
+          "description": "Text tokens use causal attention (autoregressive)"
+        },
+        "stroke_patches": {
+          "attends_to": ["stroke_patches_same_group"],
+          "mask_type": "full_within_group",
+          "description": "Patches only attend to patches in same stroke group (isolated)"
+        },
+        "cls_token": {
+          "attends_to": ["stroke_patches_same_group"],
+          "mask_type": "full",
+          "description": "[CLS] attends to all patches in its stroke group"
+        },
+        "int_token": {
+          "attends_to": ["text_context", "all_cls_tokens"],
+          "mask_type": "full",
+          "description": "[INT] attends to text context and all [CLS] tokens"
+        },
+        "decoder": {
+          "attends_to": ["text_context", "int_token"],
+          "mask_type": "causal",
+          "description": "Decoder attends to committed text + [INT] embedding"
+        }
+      },
+      "advantages": [
+        "Maximum isolation prevents context dilution",
+        "O(1) patch processing per stroke",
+        "[CLS] provides clean visual embedding"
+      ],
+      "cost": "O(text² + patches_per_stroke² × num_strokes)"
+    },
+    
+    "pattern_B_context_aware_patches": {
+      "name": "Context-Aware Patches",
+      "description": "All patches attend to text context for disambiguation",
+      "modalities": {
+        "text_context": {
+          "attends_to": ["text_context"],
+          "mask_type": "causal",
+          "description": "Text tokens use causal attention"
+        },
+        "stroke_patches": {
+          "attends_to": ["text_context", "stroke_patches"],
+          "mask_type": "full",
+          "description": "Patches attend to text AND all patches"
+        },
+        "cls_token": {
+          "attends_to": ["text_context", "stroke_patches"],
+          "mask_type": "full",
+          "description": "[CLS] attends to everything"
+        },
+        "int_token": {
+          "attends_to": ["text_context", "cls_token"],
+          "mask_type": "full",
+          "description": "[INT] attends to text and [CLS]"
+        },
+        "decoder": {
+          "attends_to": ["text_context", "int_token"],
+          "mask_type": "causal",
+          "description": "Decoder attends to committed text + [INT]"
+        }
+      },
+      "advantages": [
+        "Patches can use context for disambiguation (1 vs I)",
+        "Better for confusable symbols"
+      ],
+      "cost": "O((text + patches)²) - more expensive"
+    },
+    
+    "pattern_C_hybrid_confidence_gated": {
+      "name": "Hybrid Confidence-Gated",
+      "description": "Patches isolated by default, attend to context only when confidence low",
+      "modalities": {
+        "text_context": {
+          "attends_to": ["text_context"],
+          "mask_type": "causal",
+          "description": "Text tokens use causal attention"
+        },
+        "stroke_patches": {
+          "attends_to": ["stroke_patches_same_group"],
+          "mask_type": "full_within_group",
+          "conditional_attend": {
+            "target": "text_context",
+            "condition": "confidence < threshold",
+            "threshold": 0.7
+          },
+          "description": "Patches isolated unless confidence below threshold"
+        },
+        "cls_token": {
+          "attends_to": ["stroke_patches_same_group"],
+          "mask_type": "full",
+          "conditional_attend": {
+            "target": "text_context",
+            "condition": "confidence < threshold",
+            "threshold": 0.7
+          },
+          "description": "[CLS] can optionally attend to context"
+        },
+        "int_token": {
+          "attends_to": ["text_context", "all_cls_tokens"],
+          "mask_type": "full",
+          "description": "[INT] always sees full context"
+        },
+        "decoder": {
+          "attends_to": ["text_context", "int_token"],
+          "mask_type": "causal",
+          "description": "Standard causal decoding"
+        }
+      },
+      "advantages": [
+        "Best of both: efficient when confident, accurate when uncertain",
+        "Adaptive computation"
+      ],
+      "cost": "O(text² + patches²) base, O((text+patches)²) when uncertain"
+    },
+    
+    "pattern_D_per_stroke_cls_only": {
+      "name": "Per-Stroke [CLS] Only",
+      "description": "Only [CLS] tokens are visible, patches completely hidden",
+      "modalities": {
+        "text_context": {
+          "attends_to": ["text_context"],
+          "mask_type": "causal",
+          "description": "Causal text attention"
+        },
+        "stroke_patches": {
+          "attends_to": ["stroke_patches_same_group"],
+          "mask_type": "full_within_group",
+          "visible_to_decoder": false,
+          "description": "Patches only visible to their [CLS], not to decoder"
+        },
+        "cls_token": {
+          "attends_to": ["stroke_patches_same_group"],
+          "mask_type": "full",
+          "description": "[CLS] aggregates patches"
+        },
+        "int_token": {
+          "attends_to": ["text_context", "all_cls_tokens"],
+          "mask_type": "full",
+          "description": "[INT] sees text + [CLS] embeddings"
+        },
+        "decoder": {
+          "attends_to": ["text_context", "all_cls_tokens", "int_token"],
+          "mask_type": "causal",
+          "description": "Decoder sees [CLS] tokens, not raw patches"
+        }
+      },
+      "advantages": [
+        "Minimal patch tokens in decoder context",
+        "Compressed visual representation"
+      ],
+      "cost": "O(text² + num_strokes²)"
+    }
+  },
+  
+  "default_pattern": "pattern_A_isolated_patches",
+  
+  "mask_types": {
+    "causal": "Lower triangular mask (each position attends to previous)",
+    "full": "No mask (attend to all positions)",
+    "full_within_group": "Full attention within group, no attention across groups",
+    "bidirectional": "Full attention (same as full, for clarity)"
+  },
+  
+  "token_types": {
+    "text_context": "Committed LaTeX tokens from previous recognition",
+    "stroke_patches": "Visual patches extracted along stroke trajectory",
+    "cls_token": "Per-stroke aggregation token [CLS]",
+    "int_token": "Global integration token [INT] for reasoning",
+    "decoder": "Autoregressive output tokens"
+  },
+  
+  "stroke_grouping": {
+    "description": "How patches are grouped by stroke",
+    "format": "[P0, P1, P2, CLS_0] [P3, P4, CLS_1] [P5, P6, P7, CLS_2] [INT]",
+    "separator": "STROKE_SEP token or positional encoding break",
+    "cls_position": "End of each stroke group"
+  }
+}
+
