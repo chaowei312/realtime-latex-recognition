@@ -3627,60 +3627,140 @@ class CaseGenerator:
         random.shuffle(cases)
         return cases[:count]
     
-    def generate_by_depth(self, min_depth: int = 1, max_depth: int = 5, 
-                          count: int = 100) -> List[EditCase]:
+    def generate_at_depth(self, target_depth: int, count: int = 100) -> List[EditCase]:
         """
-        Generate cases filtered by depth range.
+        Generate cases AT a specific depth (not filtered, but built at that depth).
+        
+        Args:
+            target_depth: Exact depth to generate expressions at
+            count: Number of cases to generate
+            
+        Returns:
+            List of EditCase built at the target depth
+        """
+        cases = []
+        builder = ExpressionBuilder(seed=self.seed)
+        
+        operations = ['ADD', 'REPLACE', 'FILL']
+        case_id = 0
+        
+        while len(cases) < count:
+            op = random.choice(operations)
+            
+            if op == 'ADD':
+                # Build expression at target_depth - 1, then add to reach target_depth
+                base_depth = max(1, target_depth - 1)
+                before_expr = builder.build(base_depth)
+                
+                add_type = random.choice(['term', 'subscript', 'superscript', 'fraction'])
+                if add_type == 'term':
+                    term = builder._get_expr_at_depth(0)
+                    bin_op = random.choice(builder.BINARY_OPS)
+                    after_expr = f'{before_expr} {bin_op} {term}'
+                elif add_type == 'subscript':
+                    sub = builder._get_expr_at_depth(random.randint(0, 1))
+                    after_expr = f'{{{before_expr}}}_{{{sub}}}'
+                elif add_type == 'superscript':
+                    sup = builder._get_expr_at_depth(random.randint(0, 1))
+                    after_expr = f'{{{before_expr}}}^{{{sup}}}'
+                else:  # fraction
+                    denom = builder._get_expr_at_depth(random.randint(0, 1))
+                    after_expr = f'\\frac{{{before_expr}}}{{{denom}}}'
+                
+                desc = f"Add {add_type} at depth {target_depth}"
+                
+            elif op == 'REPLACE':
+                # Build at target_depth, then replace a symbol
+                expr = builder.build(target_depth)
+                old_sym = random.choice(builder.VARIABLES[:5])
+                new_sym = random.choice([v for v in builder.VARIABLES[:5] if v != old_sym])
+                if old_sym in expr:
+                    before_expr = expr
+                    after_expr = expr.replace(old_sym, new_sym, 1)
+                    desc = f"Replace '{old_sym}' with '{new_sym}'"
+                else:
+                    continue  # Skip if symbol not found
+                    
+            else:  # FILL
+                # Build with empty slot at target_depth
+                with_empty, filled, fill_content = builder.build_with_empty_slot(target_depth)
+                before_expr = with_empty
+                after_expr = filled
+                desc = f"Fill empty with '{fill_content}'"
+            
+            # Verify depth matches target
+            actual_depth = compute_case_depth(before_expr, after_expr)
+            
+            cases.append(EditCase(
+                id=f"depth{target_depth}_{case_id:04d}",
+                category="depth_controlled",
+                subcategory=op.lower(),
+                operation=op,
+                before_latex=before_expr,
+                after_latex=after_expr,
+                edit_description=desc,
+                depth=actual_depth,
+            ))
+            case_id += 1
+        
+        return cases[:count]
+    
+    def generate_by_depth_range(self, min_depth: int = 1, max_depth: int = 5, 
+                                count: int = 100) -> List[EditCase]:
+        """
+        Generate cases within a depth range (generates at each depth, then combines).
         
         Args:
             min_depth: Minimum expression depth (inclusive)
             max_depth: Maximum expression depth (inclusive)
-            count: Target number of cases
+            count: Total number of cases
             
         Returns:
-            List of EditCase within depth range
+            List of EditCase distributed across the depth range
         """
-        # Generate more cases than needed (we'll filter)
-        all_cases = self.generate_all(count_per_category=count // 5)
+        cases = []
+        depths = list(range(min_depth, max_depth + 1))
+        count_per_depth = max(1, count // len(depths))
         
-        # Compute depths and filter
-        for case in all_cases:
-            case.compute_depth()
+        for depth in depths:
+            depth_cases = self.generate_at_depth(depth, count_per_depth)
+            cases.extend(depth_cases)
         
-        filtered = [c for c in all_cases if min_depth <= c.depth <= max_depth]
-        
-        if len(filtered) < count:
-            # Need more - generate additional
-            extra = self.generate_all(count_per_category=count)
-            for case in extra:
-                case.compute_depth()
-            filtered.extend([c for c in extra if min_depth <= c.depth <= max_depth])
-        
-        random.shuffle(filtered)
-        return filtered[:count]
+        random.shuffle(cases)
+        return cases[:count]
     
     def generate_curriculum(self, total_count: int = 300,
-                           depth_ranges: List[Tuple[int, int]] = None) -> List[EditCase]:
+                           depths: List[int] = None,
+                           depth_distribution: Dict[int, float] = None) -> List[EditCase]:
         """
         Generate a curriculum-ordered dataset by depth progression.
         
         Args:
             total_count: Total number of cases
-            depth_ranges: List of (min_depth, max_depth) tuples for progression
-                         Default: [(1, 2), (3, 4), (5, 7)] for easy->medium->hard
+            depths: List of depths to generate (in order). Default: [1, 2, 3, 4, 5]
+            depth_distribution: Optional dict {depth: percentage} for custom distribution
+                               e.g., {1: 0.3, 2: 0.3, 3: 0.2, 4: 0.1, 5: 0.1}
             
         Returns:
             List of EditCase ordered by depth (shallow -> deep)
         """
-        if depth_ranges is None:
-            depth_ranges = [(1, 2), (3, 4), (5, 7)]
+        if depths is None:
+            depths = [1, 2, 3, 4, 5]
         
-        cases_per_range = total_count // len(depth_ranges)
         all_cases = []
         
-        for min_d, max_d in depth_ranges:
-            cases = self.generate_by_depth(min_d, max_d, cases_per_range)
-            all_cases.extend(cases)
+        if depth_distribution:
+            # Custom distribution
+            for depth, pct in sorted(depth_distribution.items()):
+                count = int(total_count * pct)
+                cases = self.generate_at_depth(depth, count)
+                all_cases.extend(cases)
+        else:
+            # Equal distribution across depths
+            count_per_depth = total_count // len(depths)
+            for depth in depths:
+                cases = self.generate_at_depth(depth, count_per_depth)
+                all_cases.extend(cases)
         
         return all_cases
     
@@ -3859,10 +3939,12 @@ def main():
     parser.add_argument("--operation", "-op", default=None,
                        choices=["ADD", "REPLACE", "INSERT", "FILL", "DELETE", "WRAP", "UNWRAP"],
                        help="Generate only specific operation")
+    parser.add_argument("--depth", "-d", type=int, default=None,
+                       help="Generate cases AT exact depth (uses ExpressionBuilder directly)")
     parser.add_argument("--min-depth", type=int, default=None,
-                       help="Minimum expression depth (filter by depth range)")
+                       help="Minimum expression depth (for depth range)")
     parser.add_argument("--max-depth", type=int, default=None,
-                       help="Maximum expression depth (filter by depth range)")
+                       help="Maximum expression depth (for depth range)")
     parser.add_argument("--curriculum", action="store_true",
                        help="Generate curriculum-ordered dataset (shallow -> deep)")
     parser.add_argument("--recompute-depth", action="store_true",
@@ -3885,12 +3967,16 @@ def main():
         # Curriculum learning: ordered by depth
         print("Generating curriculum-ordered dataset (shallow -> deep)...")
         cases = generator.generate_curriculum(total_count=args.count * 10)
+    elif args.depth is not None:
+        # Generate at exact depth
+        print(f"Generating {args.count} cases AT depth {args.depth}...")
+        cases = generator.generate_at_depth(args.depth, args.count)
     elif args.min_depth is not None or args.max_depth is not None:
-        # Filter by depth range
+        # Generate across depth range
         min_d = args.min_depth if args.min_depth is not None else 1
         max_d = args.max_depth if args.max_depth is not None else 10
-        print(f"Generating cases with depth range: {min_d}-{max_d}")
-        cases = generator.generate_by_depth(min_d, max_d, args.count * 5)
+        print(f"Generating cases across depth range: {min_d}-{max_d}")
+        cases = generator.generate_by_depth_range(min_d, max_d, args.count)
     elif args.category:
         cases = generator.generate_by_category(args.category, args.count * 3)
     elif args.operation:
