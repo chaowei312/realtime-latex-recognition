@@ -182,6 +182,131 @@
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### Cumulative Cost Analysis: Full Session
+
+The critical insight is that we process **multiple strokes per session**. The cumulative cost difference is dramatic:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    CUMULATIVE COST: Σ(per-stroke cost) OVER SESSION              │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  USER WRITES n STROKES (typical: n = 14-50 for one expression)                  │
+│  Each stroke adds ~p patches (p ≈ 16) and ~t text tokens (t ≈ 2-3)             │
+│                                                                                  │
+│  ════════════════════════════════════════════════════════════════════════════   │
+│                                                                                  │
+│  FULL SELF-ATTENTION (re-encode everything each stroke):                        │
+│  ──────────────────────────────────────────────────────                         │
+│                                                                                  │
+│    Stroke 1: (p)² = p²                     (just patches)                       │
+│    Stroke 2: (2p)² = 4p²                   (all patches so far)                 │
+│    Stroke 3: (3p)² = 9p²                                                        │
+│    ...                                                                           │
+│    Stroke n: (np)² = n²p²                                                       │
+│                                                                                  │
+│    Total = Σᵢ₌₁ⁿ (ip)² = p² × Σᵢ₌₁ⁿ i² = p² × n(n+1)(2n+1)/6                  │
+│                                                                                  │
+│          ≈ p² × n³/3  =  O(n³)                                                  │
+│                                                                                  │
+│    For n=20 strokes, p=16: ≈ 16² × 20³/3 = 256 × 2667 ≈ 683,000 ops           │
+│                                                                                  │
+│  ════════════════════════════════════════════════════════════════════════════   │
+│                                                                                  │
+│  OUR SPARSE DESIGN (incremental, text committed):                               │
+│  ────────────────────────────────────────────────                               │
+│                                                                                  │
+│    Stroke 1: p² + t           (patches + 1 text token, then commit)            │
+│    Stroke 2: p² + 2t          (new patches + growing text context)             │
+│    Stroke 3: p² + 3t                                                            │
+│    ...                                                                           │
+│    Stroke n: p² + nt                                                            │
+│                                                                                  │
+│    Total = Σᵢ₌₁ⁿ (p² + it) = np² + t × Σᵢ₌₁ⁿ i = np² + t × n(n+1)/2           │
+│                                                                                  │
+│          ≈ np² + tn²/2  =  O(n²)                                                │
+│                                                                                  │
+│    For n=20 strokes, p=16, t=3: ≈ 20×256 + 3×400/2 = 5120 + 600 ≈ 5,700 ops   │
+│                                                                                  │
+│  ════════════════════════════════════════════════════════════════════════════   │
+│                                                                                  │
+│  COMPARISON:                                                                     │
+│  ───────────                                                                     │
+│                                                                                  │
+│    Full attention:  683,000 ops   (O(n³))                                       │
+│    Our sparse:        5,700 ops   (O(n²))                                       │
+│                                                                                  │
+│    SAVINGS: 99.2% reduction!  (120× fewer operations)                           │
+│                                                                                  │
+│  ════════════════════════════════════════════════════════════════════════════   │
+│                                                                                  │
+│  WITH KV-CACHE (text context cached):                                           │
+│  ────────────────────────────────────                                           │
+│                                                                                  │
+│    Each stroke only computes:                                                   │
+│      • New patches: p² (constant)                                               │
+│      • [CLS] → patches: p (constant)                                            │
+│      • [INT] → text + CLS: n + 1 (linear)                                       │
+│      • AR decode: ~d tokens                                                     │
+│                                                                                  │
+│    Total = Σᵢ₌₁ⁿ (p² + p + i + d) ≈ n(p² + p + d) + n²/2                       │
+│                                                                                  │
+│          =  O(n²)  but with MUCH smaller constants                              │
+│                                                                                  │
+│    For n=20: ≈ 20×(256+16+5) + 200 ≈ 5,740 ops                                 │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Visual: Cost Growth Comparison
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  CUMULATIVE COST vs NUMBER OF STROKES                                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Cost (log scale)                                                               │
+│     │                                                                            │
+│  10⁷│                                              ╱ Full Attention             │
+│     │                                           ╱    Σi² = O(n³)                │
+│  10⁶│                                        ╱                                  │
+│     │                                     ╱                                     │
+│  10⁵│                                  ╱                                        │
+│     │                               ╱            ·····                          │
+│  10⁴│                            ╱         ·····     Our Sparse                 │
+│     │                         ╱       ·····          O(n²)                      │
+│  10³│                      ╱     ·····                                          │
+│     │                   ╱   ·····                                               │
+│  10²│                ╱ ·····                                                    │
+│     │             ╱····                                                         │
+│  10¹│          ╱···                                                             │
+│     │       ····                                                                 │
+│     └────────────────────────────────────────────────────────────────           │
+│          5      10      15      20      25      30      35      40              │
+│                         Number of strokes (n)                                   │
+│                                                                                  │
+│  At n=20:  Full = 683K ops,  Sparse = 5.7K ops  (120× faster)                  │
+│  At n=40:  Full = 5.5M ops,  Sparse = 23K ops   (240× faster)                  │
+│                                                                                  │
+│  The gap WIDENS as expressions get longer!                                      │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Summary: Complexity Classes
+
+| Approach | Per-Stroke | Cumulative (n strokes) | n=20 | n=40 |
+|----------|------------|------------------------|------|------|
+| **Full self-attention** | O((i·p)²) | **Σi² = O(n³)** | 683K | 5.5M |
+| **Our sparse (no cache)** | O(p² + i·t) | **O(n²)** | 5.7K | 23K |
+| **Our sparse (KV-cache)** | O(p² + i) | **O(n²)** | 5.7K | 23K |
+| **Speedup** | | | **120×** | **240×** |
+
+The **O(n³) → O(n²)** reduction comes from:
+1. **Not re-encoding visual history**: patches processed once, then committed to text
+2. **Sparse attention**: causal on text, isolated on patches
+3. **KV-cache**: text context cached, only new tokens computed
+
 ---
 
 ## 1. System Overview
