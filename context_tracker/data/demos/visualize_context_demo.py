@@ -340,45 +340,64 @@ def visualize_context_with_strokes(
     target_sym = None
     replaced_char = None
     
-    # First try: find the exact edit symbol in the rendered LaTeX
+    # Filter and sort symbols: prefer SMALL single-character symbols
+    # (superscripts/subscripts are small, full expressions are large)
+    def symbol_size(sym):
+        bbox = sym['bbox']
+        return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])  # area
+    
+    # Get single-character symbols that are in stroke corpus, sorted by size (smallest first)
+    single_char_symbols = []
     for sym in symbols:
         sym_text = sym['text'].strip()
-        if sym_text and sym_text in available_symbols:
-            if sym_text == edit_symbol or (len(edit_symbol) == 1 and edit_symbol in sym_text):
-                target_sym = sym
-                replaced_char = sym_text[0] if len(sym_text) > 0 else edit_symbol
-                break
+        # Only consider single characters (not groups like "1γ")
+        if len(sym_text) == 1 and sym_text in available_symbols:
+            single_char_symbols.append((sym, sym_text))
     
-    # Second try: find any symbol that's in our stroke corpus
-    if not target_sym:
-        for sym in symbols:
-            sym_text = sym['text'].strip()
-            if sym_text and sym_text[0] in available_symbols:
-                target_sym = sym
-                replaced_char = sym_text[0]
-                break
+    # Sort by size (prefer smaller = superscripts/subscripts)
+    single_char_symbols.sort(key=lambda x: symbol_size(x[0]))
+    
+    # First try: find a small symbol matching the edit target
+    for sym, char in single_char_symbols:
+        if char == edit_symbol:
+            target_sym = sym
+            replaced_char = char
+            break
+    
+    # Second try: find any small single-character symbol in stroke corpus
+    # Prefer the SMALLEST one (likely a superscript/subscript)
+    if not target_sym and single_char_symbols:
+        target_sym, replaced_char = single_char_symbols[0]  # Smallest first
     
     if target_sym and replaced_char:
         bbox = target_sym['bbox']
+        x0, y0, x1, y1 = [int(b) for b in bbox]
+        bbox_w = x1 - x0
+        bbox_h = y1 - y0
         
-        # Render stroke for the replaced symbol
-        stroke_w = int(bbox[2] - bbox[0]) + 20
-        stroke_h = int(bbox[3] - bbox[1]) + 20
-        stroke_size = max(stroke_w, stroke_h, 40)
+        # Render stroke sized to match the symbol bbox (with small padding)
+        # For small symbols (superscripts), keep proportional size
+        padding = max(4, min(bbox_w, bbox_h) // 2)
+        stroke_w = bbox_w + padding * 2
+        stroke_h = bbox_h + padding * 2
+        stroke_size = max(stroke_w, stroke_h, 20)  # Minimum 20px for visibility
         
         stroke_arr = render_strokes_to_array(loader, replaced_char, size=(stroke_size, stroke_size))
         stroke_img = Image.fromarray(stroke_arr, mode='L')
         
-        # White out original symbol area
-        x0, y0, x1, y1 = [int(b) for b in bbox]
-        draw.rectangle([x0-5, y0-5, x1+5, y1+5], fill='white')
+        # White out just the original symbol area (tight)
+        draw.rectangle([x0-2, y0-2, x1+2, y1+2], fill='white')
         
-        # Paste stroke (with small position jitter)
-        max_jitter = min(stroke_size // 8, 5)  # Small jitter, proportional to size
+        # Paste stroke centered on the symbol bbox
+        paste_x = x0 - padding
+        paste_y = y0 - padding
+        
+        # Small jitter within the bbox
+        max_jitter = max(1, padding // 2)
         jitter_x = random.randint(-max_jitter, max_jitter)
         jitter_y = random.randint(-max_jitter, max_jitter)
-        paste_x = int(bbox[0] - 10 + jitter_x)
-        paste_y = int(bbox[1] - 10 + jitter_y)
+        paste_x += jitter_x
+        paste_y += jitter_y
         
         # Convert stroke to RGBA for pasting
         stroke_rgba = Image.new('RGBA', stroke_img.size, (255, 255, 255, 0))
