@@ -307,6 +307,174 @@ The **O(n³) → O(n²)** reduction comes from:
 2. **Sparse attention**: causal on text, isolated on patches
 3. **KV-cache**: text context cached, only new tokens computed
 
+### Practical Implementation: Canvas Storage + Local Re-Embedding
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    IMPLEMENTATION: DUAL STORAGE ARCHITECTURE                     │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                         USER'S DRAWING CANVAS                            │    │
+│  │                    (Persistent Visual Ground Truth)                      │    │
+│  │  ┌─────────────────────────────────────────────────────────────────┐    │    │
+│  │  │                                                                  │    │    │
+│  │  │      ╱╲         ┌───┐                                           │    │    │
+│  │  │     ╱  ╲    +   │ 2 │   +   y   =   5                           │    │    │
+│  │  │    ╳    ╳       └───┘                                           │    │    │
+│  │  │     ╲  ╱          ↑                                             │    │    │
+│  │  │      ╲╱      (superscript)                                      │    │    │
+│  │  │       x                                                          │    │    │
+│  │  │                                                                  │    │    │
+│  │  │   Strokes stored as: [(x,y,t), ...] per symbol                  │    │    │
+│  │  │   Bounding boxes: {sym_id: (x1,y1,x2,y2)}                       │    │    │
+│  │  │                                                                  │    │    │
+│  │  └─────────────────────────────────────────────────────────────────┘    │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                        │                                         │
+│                                        │ Recognition                             │
+│                                        ▼                                         │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                         MODEL'S TEXT CONTEXT                             │    │
+│  │                    (Compressed Symbolic Form)                            │    │
+│  │                                                                          │    │
+│  │   tokens: ["x", "^{", "2", "}", "+", "y", "=", "5"]                      │    │
+│  │   positions: [{bbox, sym_id}, {bbox, sym_id}, ...]                       │    │
+│  │                                                                          │    │
+│  │   KV-cache: [k₁,v₁], [k₂,v₂], ..., [k₈,v₈]                              │    │
+│  │                                                                          │    │
+│  │   ✓ Patch embeddings: REMOVED (not needed after recognition)            │    │
+│  │   ✓ Bounding boxes: KEPT (for spatial alignment on re-edit)             │    │
+│  │   ✓ KV-cache: KEPT (for efficient context lookup)                       │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    EDIT OPERATION: LOCAL RE-EMBEDDING                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  User draws new stroke over "2" to change it to "3":                            │
+│                                                                                  │
+│  STEP 1: Detect edit region via 2D position                                     │
+│  ─────────────────────────────────────────────                                  │
+│                                                                                  │
+│      Canvas:          New stroke bbox: (45, 5, 55, 20)                          │
+│      ┌────────────────────────────────────┐                                     │
+│      │      x²  + y = 5                   │                                     │
+│      │       ↑                            │                                     │
+│      │    [edit region]                   │  Overlaps with "2" bbox             │
+│      │    (45,5)───(55,5)                │  → REPLACE operation detected        │
+│      │      │         │                   │                                     │
+│      │    (45,20)──(55,20)               │                                     │
+│      └────────────────────────────────────┘                                     │
+│                                                                                  │
+│  STEP 2: Crop LOCAL region (not entire canvas!)                                 │
+│  ──────────────────────────────────────────────                                 │
+│                                                                                  │
+│      ┌─────────────┐                                                            │
+│      │   x    3    │  ← Small crop around edit area                            │
+│      │    ╲   ╱╲   │    May include neighboring "x" for context                │
+│      │     ╳   ╲╱  │    (but NOT the entire "x² + y = 5")                      │
+│      └─────────────┘                                                            │
+│                                                                                  │
+│      Crop size: ~2× edit bbox (include spatial context)                        │
+│      Patches extracted: p ≈ 16 (constant, regardless of expression length!)    │
+│                                                                                  │
+│  STEP 3: Model sees ONLY local patches + full text context                      │
+│  ─────────────────────────────────────────────────────────                      │
+│                                                                                  │
+│      Input to model:                                                            │
+│      ┌────────────────────────────────────────────────────────────┐            │
+│      │ Text Context (cached)  │ Local Patches │ [CLS] │ [INT]    │            │
+│      │ "x" "^{" "2" "}" "+"   │ [P₀]..[P₁₅]   │       │          │            │
+│      │ "y" "=" "5"            │ (edit region) │       │          │            │
+│      └────────────────────────────────────────────────────────────┘            │
+│                                                                                  │
+│      Model does NOT see: patches for "x", "+", "y", "=", "5"                   │
+│      Model DOES see: text tokens for full context (KV-cached)                  │
+│                                                                                  │
+│  STEP 4: Output and update                                                      │
+│  ─────────────────────────────                                                  │
+│                                                                                  │
+│      Output: [REPLACE] [pos=2] "3" [EOS]                                        │
+│                                                                                  │
+│      Update text context: ["x", "^{", "3", "}", "+", "y", "=", "5"]            │
+│      Update canvas: keep "3" strokes, mark "2" as replaced                     │
+│      Update KV-cache: only recompute k₃,v₃ (position 2)                        │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why Local Cropping Works
+
+| Aspect | Full Canvas Embedding | Local Edit Crop (Ours) |
+|--------|----------------------|------------------------|
+| **Patches per edit** | O(total_symbols × p) | O(p) constant |
+| **What model sees** | Everything (redundant) | Edit region + text context |
+| **Visual quality** | Diluted by irrelevant areas | Focused on edit |
+| **Latency** | Grows with expression | **Constant ~10ms** |
+
+### Data Flow Summary
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    MODEL INPUT: ALWAYS SMALL + CONTEXTUAL                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  WHAT MODEL SEES:                                                               │
+│  ════════════════                                                               │
+│                                                                                  │
+│  ┌──────────────────────────────────────────────────────────────────────────┐  │
+│  │                                                                           │  │
+│  │   TEXT CONTEXT              LOCAL PATCHES           SPECIAL TOKENS       │  │
+│  │   (full expression)         (edit region only)      (aggregation)        │  │
+│  │                                                                           │  │
+│  │   "x" "^{" "2" "}" "+"      ┌─────────────┐         [CLS] [INT]          │  │
+│  │   "y" "=" "5"               │ ╱╲  (new 3) │                              │  │
+│  │        │                    │ ╲╱          │              │               │  │
+│  │        │                    └─────────────┘              │               │  │
+│  │        │                          │                      │               │  │
+│  │        │ KV-cached                │ Fresh patches        │ Compute       │  │
+│  │        │ (O(1) lookup)            │ (O(p²) attention)    │ output        │  │
+│  │        │                          │                      │               │  │
+│  │        └──────────────────────────┴──────────────────────┘               │  │
+│  │                                   │                                       │  │
+│  │                                   ▼                                       │  │
+│  │                          [REPLACE] [pos=2] "3"                           │  │
+│  │                                                                           │  │
+│  └──────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                  │
+│  WHAT MODEL NEVER SEES (on edit):                                               │
+│  ════════════════════════════════                                               │
+│                                                                                  │
+│  ✗ Patch embeddings for already-recognized symbols                             │
+│  ✗ Full canvas re-rendering                                                    │
+│  ✗ Historical stroke trajectories                                              │
+│                                                                                  │
+│  WHAT'S STORED BUT NOT EMBEDDED:                                                │
+│  ═══════════════════════════════                                                │
+│                                                                                  │
+│  Canvas DB:                                                                     │
+│  ├─ symbol_id: "sym_001"                                                       │
+│  │  ├─ strokes: [[(x,y,t), ...], ...]    (for re-rendering/export)            │
+│  │  ├─ bbox: (10, 15, 30, 45)            (for edit detection)                 │
+│  │  ├─ text_token: "x"                   (committed recognition)              │
+│  │  └─ context_pos: 0                    (position in text sequence)          │
+│  ├─ symbol_id: "sym_002"                                                       │
+│  │  └─ ...                                                                     │
+│  └─ ...                                                                        │
+│                                                                                  │
+│  This allows:                                                                   │
+│  • Undo/redo (restore strokes from canvas)                                     │
+│  • Export to SVG/PDF (original stroke data)                                    │
+│  • Re-recognition if user disputes (re-embed from canvas)                      │
+│  • Spatial edit detection (bbox overlap check)                                 │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## 1. System Overview
