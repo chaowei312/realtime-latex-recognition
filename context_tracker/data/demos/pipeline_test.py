@@ -454,18 +454,22 @@ class PipelineTestGenerator:
         out_dir = self.output_dir / 'commutative_diagrams'
         out_dir.mkdir(exist_ok=True)
         
-        # Sample tikzcd expressions
+        # Sample tikzcd expressions with labels, mixed case, varied complexity
         diagrams = [
-            # Simple arrow
-            r"\begin{tikzcd} A \arrow[r] & B \end{tikzcd}",
-            # Triangle
-            r"\begin{tikzcd} A \arrow[r] \arrow[dr] & B \arrow[d] \\ & C \end{tikzcd}",
-            # Square
-            r"\begin{tikzcd} A \arrow[r] \arrow[d] & B \arrow[d] \\ C \arrow[r] & D \end{tikzcd}",
-            # With labels
-            r"\begin{tikzcd} X \arrow[r, \"f\"] & Y \arrow[r, \"g\"] & Z \end{tikzcd}",
-            # Complex
-            r"\begin{tikzcd} A \arrow[r, \"f\"] \arrow[d, \"h\"'] & B \arrow[d, \"k\"] \\ C \arrow[r, \"g\"'] & D \end{tikzcd}",
+            # Simple with label
+            r"\begin{tikzcd} A \arrow[r, \"f\"] & B \end{tikzcd}",
+            # Mixed case with labels
+            r"\begin{tikzcd} X \arrow[r, \"\\phi\"] & y \arrow[r, \"g\"] & Z \end{tikzcd}",
+            # Triangle with labels
+            r"\begin{tikzcd} a \arrow[r, \"f\"] \arrow[dr, \"h\"'] & B \arrow[d, \"g\"] \\ & c \end{tikzcd}",
+            # Square with mixed case and labels
+            r"\begin{tikzcd} A \arrow[r, \"f\"] \arrow[d, \"h\"'] & b \arrow[d, \"k\"] \\ C \arrow[r, \"g\"'] & D \end{tikzcd}",
+            # Complex with Greek
+            r"\begin{tikzcd} X \arrow[r, \"\\alpha\"] \arrow[d, \"\\beta\"'] & Y \arrow[d, \"\\gamma\"] \\ z \arrow[r, \"\\delta\"'] & W \end{tikzcd}",
+            # Chain with functions
+            r"\begin{tikzcd} a \arrow[r, \"f\"] & B \arrow[r, \"g\"] & c \arrow[r, \"h\"] & D \end{tikzcd}",
+            # Commutative square with isomorphism
+            r"\begin{tikzcd} M \arrow[r, \"\\sim\"] \arrow[d] & n \arrow[d] \\ P \arrow[r] & q \end{tikzcd}",
         ]
         
         diagram_data = []
