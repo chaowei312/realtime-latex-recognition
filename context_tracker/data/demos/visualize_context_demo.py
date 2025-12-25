@@ -49,6 +49,51 @@ except ImportError:
     print("Need: PyMuPDF for LaTeX rendering")
 
 
+def _compute_ink_bbox(page, span_bbox, scale: int = 10) -> tuple:
+    """
+    Compute actual ink bounding box by rendering and finding non-white pixels.
+    
+    PyMuPDF span_bbox includes font ascender/descender, which is much larger
+    than the actual visible ink. This computes the tight bbox around visible pixels.
+    """
+    try:
+        import numpy as np
+        
+        # Clip with small padding
+        pad = 2
+        clip = fitz.Rect(
+            max(0, span_bbox[0] - pad),
+            max(0, span_bbox[1] - pad),
+            min(page.rect.width, span_bbox[2] + pad),
+            min(page.rect.height, span_bbox[3] + pad)
+        )
+        
+        # Render at high resolution
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+        
+        # Find non-white pixels
+        gray = arr.mean(axis=2)
+        ink_pixels = np.where(gray < 250)
+        
+        if len(ink_pixels[0]) == 0:
+            return span_bbox
+        
+        y_min, y_max = ink_pixels[0].min(), ink_pixels[0].max()
+        x_min, x_max = ink_pixels[1].min(), ink_pixels[1].max()
+        
+        # Convert to PDF points
+        return (
+            clip.x0 + x_min / scale,
+            clip.y0 + y_min / scale,
+            clip.x0 + (x_max + 1) / scale,
+            clip.y0 + (y_max + 1) / scale,
+        )
+    except Exception:
+        return span_bbox
+
+
 def render_latex_to_pil(latex: str, dpi: int = 150) -> tuple:
     """
     Render LaTeX to PIL Image and extract symbol positions.
@@ -95,7 +140,7 @@ $%s$
         pix = page.get_pixmap(matrix=mat)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         
-        # Extract symbol positions
+        # Extract symbol positions with accurate ink bboxes
         symbols = []
         scale = dpi / 72
         blocks = page.get_text("dict")["blocks"]
@@ -103,11 +148,24 @@ $%s$
             if "lines" in block:
                 for line in block["lines"]:
                     for span in line["spans"]:
-                        bbox = span["bbox"]
+                        span_bbox = span["bbox"]
+                        text = span["text"].strip()
+                        
+                        # Compute ink bbox for single characters (more accurate)
+                        if len(text) == 1:
+                            ink_bbox = _compute_ink_bbox(page, span_bbox, scale=10)
+                        else:
+                            ink_bbox = span_bbox
+                        
+                        # Scale to image coordinates
+                        bbox = [b * scale for b in ink_bbox]
+                        
                         symbols.append({
                             'text': span["text"],
-                            'bbox': [b * scale for b in bbox],
-                            'center': ((bbox[0]+bbox[2])/2 * scale, (bbox[1]+bbox[3])/2 * scale),
+                            'bbox': bbox,
+                            'span_bbox': [b * scale for b in span_bbox],
+                            'center': ((ink_bbox[0]+ink_bbox[2])/2 * scale, 
+                                      (ink_bbox[1]+ink_bbox[3])/2 * scale),
                         })
         
         doc.close()

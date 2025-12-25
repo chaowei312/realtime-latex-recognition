@@ -14,20 +14,25 @@ import tempfile
 from typing import List, Dict, Optional, Tuple, Any
 
 
-def extract_symbol_positions_from_pdf(pdf_path: str) -> List[Dict]:
+def extract_symbol_positions_from_pdf(pdf_path: str, use_ink_bbox: bool = True) -> List[Dict]:
     """
     Extract symbol positions from a rendered LaTeX PDF using PyMuPDF.
     
-    This gives us EXACT bounding boxes for each symbol/character in the PDF.
+    IMPORTANT: PyMuPDF span bboxes include font metrics (ascender/descender),
+    which are much larger than the actual visible ink. When use_ink_bbox=True,
+    we compute the actual ink bbox from rendered pixels, which is more accurate
+    for matching with handwriting stroke bboxes.
     
     Args:
         pdf_path: Path to rendered PDF
+        use_ink_bbox: If True, compute actual ink bbox (recommended)
         
     Returns:
-        List of {text, bbox, center} dicts for each symbol
+        List of {text, bbox, center, ink_bbox} dicts for each symbol
     """
     try:
         import fitz
+        import numpy as np
     except ImportError:
         return []
     
@@ -42,10 +47,24 @@ def extract_symbol_positions_from_pdf(pdf_path: str) -> List[Dict]:
                 for line in block["lines"]:
                     for span in line["spans"]:
                         text = span["text"]
-                        bbox = span["bbox"]  # (x0, y0, x1, y1) in PDF points
+                        span_bbox = span["bbox"]  # Font metrics bbox (larger)
+                        
+                        # Compute actual ink bbox if requested
+                        if use_ink_bbox and len(text.strip()) == 1:
+                            ink_bbox = _compute_ink_bbox_for_span(
+                                doc, page, span_bbox, render_scale=10
+                            )
+                        else:
+                            ink_bbox = span_bbox
+                        
+                        # Use ink bbox as the primary bbox
+                        bbox = ink_bbox if ink_bbox else span_bbox
+                        
                         symbols.append({
                             "text": text,
                             "bbox": bbox,
+                            "span_bbox": span_bbox,  # Keep original for reference
+                            "ink_bbox": ink_bbox,
                             "x0": bbox[0],
                             "y0": bbox[1],
                             "x1": bbox[2],
@@ -59,6 +78,71 @@ def extract_symbol_positions_from_pdf(pdf_path: str) -> List[Dict]:
         print(f"Error extracting symbols: {e}")
     
     return symbols
+
+
+def _compute_ink_bbox_for_span(doc, page, span_bbox, render_scale: int = 10) -> tuple:
+    """
+    Compute actual ink bounding box by rendering and finding non-white pixels.
+    
+    This is more accurate than span_bbox which includes font ascender/descender.
+    
+    Args:
+        doc: PyMuPDF document
+        page: Page object
+        span_bbox: Original span bounding box
+        render_scale: Render scale for precision (higher = more accurate but slower)
+        
+    Returns:
+        (x0, y0, x1, y1) in PDF points, or None if failed
+    """
+    try:
+        import fitz
+        import numpy as np
+        from PIL import Image
+    except ImportError:
+        return None
+    
+    try:
+        # Expand span_bbox slightly to ensure we capture all ink
+        pad = 2  # PDF points
+        clip_rect = fitz.Rect(
+            max(0, span_bbox[0] - pad),
+            max(0, span_bbox[1] - pad),
+            min(page.rect.width, span_bbox[2] + pad),
+            min(page.rect.height, span_bbox[3] + pad)
+        )
+        
+        # Render clip region at high resolution
+        mat = fitz.Matrix(render_scale, render_scale)
+        pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        arr = np.array(img)
+        
+        # Find non-white pixels (ink)
+        gray = arr.mean(axis=2)
+        ink_mask = gray < 250  # Threshold for "not white"
+        ink_pixels = np.where(ink_mask)
+        
+        if len(ink_pixels[0]) == 0:
+            return span_bbox  # No ink found, return original
+        
+        # Get bounding box of ink pixels
+        y_min, y_max = ink_pixels[0].min(), ink_pixels[0].max()
+        x_min, x_max = ink_pixels[1].min(), ink_pixels[1].max()
+        
+        # Convert back to PDF points (accounting for clip offset)
+        ink_bbox = (
+            clip_rect.x0 + x_min / render_scale,
+            clip_rect.y0 + y_min / render_scale,
+            clip_rect.x0 + (x_max + 1) / render_scale,
+            clip_rect.y0 + (y_max + 1) / render_scale,
+        )
+        
+        return ink_bbox
+        
+    except Exception as e:
+        # Fall back to span bbox on any error
+        return span_bbox
 
 
 def find_symbol_bbox_in_latex(latex: str, target_symbol: str, 
