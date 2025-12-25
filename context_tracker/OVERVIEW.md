@@ -590,6 +590,160 @@ class SparseInkStorage:
 | **Undo last stroke** | ❌ Full re-infer | ✅ Remove stroke, re-encode |
 | **Fix part of symbol** | ❌ Model sees only new | ✅ (old - fix_area) ∪ fix |
 
+### Trajectory-Based Patch Extraction (Efficient)
+
+Instead of Conv2D scanning over a dense crop (wasteful on whitespace), we **trace along stroke trajectories**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  CONV SCAN vs TRAJECTORY TRACE                                                   │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ❌ DENSE SCAN (Wasteful):                ✅ TRAJECTORY TRACE (Efficient):       │
+│  ═══════════════════════                  ═══════════════════════════════        │
+│                                                                                  │
+│  Render sparse → dense image             Use stroke coordinates directly        │
+│  ┌─────────────────────────┐             stroke = [(x₀,y₀), (x₁,y₁), ...]       │
+│  │ · · · · · · · · · · · · │                                                    │
+│  │ · · ╲ · · · · · ╱ · · · │             Sample patches along trajectory:       │
+│  │ · · · ╲ · · · ╱ · · · · │             ┌─────────────────────────┐            │
+│  │ · · · · ╲ · ╱ · · · · · │             │         [P₀]            │            │
+│  │ · · · · · ╳ · · · · · · │             │       ╲  ↓              │            │
+│  │ · · · · ╱ · ╲ · · · · · │             │        ╲[P₁]    [P₄]    │            │
+│  │ · · · ╱ · · · ╲ · · · · │             │         ╲ ↓    ↗ ╱      │            │
+│  │ · · ╱ · · · · · ╲ · · · │             │          ╲[P₂]╱         │            │
+│  └─────────────────────────┘             │           ╳             │            │
+│  Conv2D scans ALL pixels                 │          ╱[P₃]╲         │            │
+│  32×32 = 1024 ops                        └─────────────────────────┘            │
+│  ~95% on whitespace!                     Only 5 patches for "x"!               │
+│                                                                                  │
+│  Cost: O(H × W)                          Cost: O(stroke_length)                 │
+│        ~1000 patches                           ~10-50 patches                   │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Patch Extraction Along Trajectory
+
+```python
+def extract_trajectory_patches(
+    stroke: List[Tuple[float, float]],  # Raw stroke coordinates
+    canvas: np.ndarray,                  # Full canvas with all ink
+    patch_size: int = 16,
+    sample_interval: int = 8,            # Sample every N points
+) -> List[np.ndarray]:
+    """Extract patches ONLY along stroke trajectory."""
+    
+    patches = []
+    
+    for i in range(0, len(stroke), sample_interval):
+        x, y = stroke[i]
+        
+        # Extract local patch centered at trajectory point
+        x1, y1 = int(x - patch_size//2), int(y - patch_size//2)
+        x2, y2 = x1 + patch_size, y1 + patch_size
+        
+        patch = canvas[y1:y2, x1:x2]  # 16×16 local context
+        patches.append(patch)
+    
+    return patches  # Variable length based on stroke complexity!
+```
+
+### Multi-Stroke Symbol Handling
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  MULTI-STROKE TRAJECTORY EXTRACTION                                             │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Symbol "x" = 2 strokes:                                                         │
+│                                                                                  │
+│  Stroke 1: ╲                 trajectory₁ = [(10,5), (12,7), (14,9), ...]        │
+│             ╲                                                                   │
+│              ╲               → Extract [P₀, P₁, P₂, P₃]                         │
+│               ╲                                                                 │
+│                                                                                  │
+│  Stroke 2:    ╱              trajectory₂ = [(18,5), (16,7), (14,9), ...]        │
+│              ╱                                                                  │
+│             ╱                → Extract [P₄, P₅, P₆, P₇]                         │
+│            ╱                                                                    │
+│                                                                                  │
+│  Combined: [P₀, P₁, P₂, P₃] [STROKE_SEP] [P₄, P₅, P₆, P₇] [CLS]               │
+│                                                                                  │
+│  Each patch captures LOCAL context (may see ink from both strokes)              │
+│  Stroke order preserved → temporal information retained                         │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Why Trajectory Trace is Better
+
+| Aspect | Dense Conv Scan | Trajectory Trace |
+|--------|-----------------|------------------|
+| **Patches extracted** | O(H×W / patch²) ≈ 64 | O(stroke_len / interval) ≈ 5-15 |
+| **Computation** | ~95% on whitespace | Only on ink |
+| **Ordering** | Arbitrary (left→right) | Temporal (stroke direction) |
+| **Variable length** | Fixed grid | Adapts to complexity |
+| **Multi-stroke** | Loses stroke boundaries | Natural grouping |
+| **Speedup** | Baseline | **10-50× fewer patches** |
+
+### Re-Encoding with Trajectory (Edit Case)
+
+```python
+def reencode_edited_symbol(
+    old_strokes: List[List[Tuple]],   # Original stroke trajectories
+    new_strokes: List[List[Tuple]],   # New stroke trajectories  
+    erase_region: set = None,
+    conv_encoder: nn.Module,
+) -> torch.Tensor:
+    """Re-encode after edit using trajectory-based extraction."""
+    
+    # 1. Render combined ink to canvas (for local patch context)
+    canvas = render_strokes_to_canvas(old_strokes + new_strokes, erase_region)
+    
+    # 2. Filter out fully erased old strokes
+    active_old = [s for s in old_strokes if not fully_erased(s, erase_region)]
+    all_trajectories = active_old + new_strokes
+    
+    # 3. Extract patches along ALL active trajectories
+    all_patches = []
+    for stroke in all_trajectories:
+        patches = extract_trajectory_patches(stroke, canvas)
+        all_patches.extend(patches)
+    
+    # 4. Batch encode (much smaller than full image!)
+    patch_tensor = torch.stack([to_tensor(p) for p in all_patches])
+    embeddings = conv_encoder(patch_tensor)  # Efficient batch
+    
+    return embeddings  # Ready for KV-cache update
+```
+
+### Integration with Per-Stroke [CLS]
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  STROKE-GROUPED PATCHES WITH TRAJECTORY                                         │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Input sequence structure:                                                       │
+│                                                                                  │
+│  ┌────────┬──────────────────────┬──────────────────────┬─────┐                 │
+│  │ Text   │ Stroke 1 patches     │ Stroke 2 patches     │ INT │                 │
+│  │"x + y" │[P₀][P₁][P₂][CLS₁]   │[P₃][P₄][P₅][CLS₂]   │     │                 │
+│  └────────┴──────────────────────┴──────────────────────┴─────┘                 │
+│                ↑                       ↑                                         │
+│           trajectory₁             trajectory₂                                    │
+│           samples                 samples                                        │
+│                                                                                  │
+│  [CLS₁] attends only to [P₀, P₁, P₂]  (isolated attention)                     │
+│  [CLS₂] attends only to [P₃, P₄, P₅]  (isolated attention)                     │
+│  [INT] attends to [CLS₁, CLS₂] + text context (semantic reasoning)             │
+│                                                                                  │
+│  → Natural stroke grouping from trajectory extraction!                          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Data Flow Summary
 
 ```
