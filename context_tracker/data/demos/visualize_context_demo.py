@@ -191,10 +191,37 @@ def compose_context_with_diagram(seed: int = 42) -> dict:
     # Full context
     full_context = " \\quad ".join(context_parts)
     
-    # Edit info (from atomic case)
-    edit_target = atomic.after_latex.replace(atomic.before_latex, "").strip()
+    # Edit info - get actual symbol from metadata (NOT string diff which includes LaTeX syntax)
+    edit_target = None
+    if hasattr(atomic, 'metadata') and atomic.metadata:
+        edit_target = atomic.metadata.get('edit_symbol') or atomic.metadata.get('edit_symbols', [None])[0]
+    
+    # Fallback: try to extract a writable symbol from the diff
     if not edit_target:
-        edit_target = "x"  # Fallback
+        import re
+        diff = atomic.after_latex.replace(atomic.before_latex, "").strip()
+        
+        # Look for Greek letters first (they're the most likely edit in math)
+        greek_match = re.search(r'\\(alpha|beta|gamma|delta|epsilon|theta|lambda|mu|sigma|phi|psi|omega|iota|'
+                                r'Gamma|Delta|Theta|Lambda|Sigma|Phi|Psi|Omega|Pi)', diff)
+        if greek_match:
+            # Map to Unicode for display
+            greek_map = {
+                'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ', 'epsilon': 'ε',
+                'theta': 'θ', 'lambda': 'λ', 'mu': 'μ', 'sigma': 'σ', 'phi': 'φ',
+                'psi': 'ψ', 'omega': 'ω', 'iota': 'ι', 'Gamma': 'Γ', 'Delta': 'Δ',
+                'Theta': 'Θ', 'Lambda': 'Λ', 'Sigma': 'Σ', 'Phi': 'Φ', 'Psi': 'Ψ',
+                'Omega': 'Ω', 'Pi': 'Π'
+            }
+            edit_target = greek_map.get(greek_match.group(1), greek_match.group(1))
+        else:
+            # Look for single letters/digits (actual writable symbols)
+            char_match = re.search(r'(?<![a-zA-Z])([a-zA-Z0-9])(?![a-zA-Z])', diff)
+            if char_match:
+                edit_target = char_match.group(1)
+    
+    if not edit_target:
+        edit_target = "x"  # Final fallback
     
     # Symbol positions with jitter (small - within half bbox width)
     positions = []
@@ -306,37 +333,50 @@ def visualize_context_with_strokes(
     draw = ImageDraw.Draw(img_with_strokes)
     
     # Find a symbol to replace with strokes
+    # The edit_target should be a writable symbol (letter, Greek, digit) - NOT LaTeX syntax
     edit_symbol = context_data['edit_target']
-    if len(edit_symbol) > 1:
-        edit_symbol = edit_symbol[0]  # Just first char
     
-    # Find symbol in rendered image
+    # Find this symbol (or a suitable one) in rendered image that we can replace with strokes
     target_sym = None
-    for sym in symbols:
-        if sym['text'].strip() and sym['text'].strip()[0] in available_symbols:
-            target_sym = sym
-            break
+    replaced_char = None
     
-    if target_sym:
-        # Get the symbol to replace
-        sym_char = target_sym['text'].strip()[0]
+    # First try: find the exact edit symbol in the rendered LaTeX
+    for sym in symbols:
+        sym_text = sym['text'].strip()
+        if sym_text and sym_text in available_symbols:
+            if sym_text == edit_symbol or (len(edit_symbol) == 1 and edit_symbol in sym_text):
+                target_sym = sym
+                replaced_char = sym_text[0] if len(sym_text) > 0 else edit_symbol
+                break
+    
+    # Second try: find any symbol that's in our stroke corpus
+    if not target_sym:
+        for sym in symbols:
+            sym_text = sym['text'].strip()
+            if sym_text and sym_text[0] in available_symbols:
+                target_sym = sym
+                replaced_char = sym_text[0]
+                break
+    
+    if target_sym and replaced_char:
         bbox = target_sym['bbox']
         
-        # Render stroke for this symbol
+        # Render stroke for the replaced symbol
         stroke_w = int(bbox[2] - bbox[0]) + 20
         stroke_h = int(bbox[3] - bbox[1]) + 20
         stroke_size = max(stroke_w, stroke_h, 40)
         
-        stroke_arr = render_strokes_to_array(loader, sym_char, size=(stroke_size, stroke_size))
+        stroke_arr = render_strokes_to_array(loader, replaced_char, size=(stroke_size, stroke_size))
         stroke_img = Image.fromarray(stroke_arr, mode='L')
         
         # White out original symbol area
         x0, y0, x1, y1 = [int(b) for b in bbox]
         draw.rectangle([x0-5, y0-5, x1+5, y1+5], fill='white')
         
-        # Paste stroke (with position jitter)
-        jitter_x = random.randint(-8, 8)
-        jitter_y = random.randint(-8, 8)
+        # Paste stroke (with small position jitter)
+        max_jitter = min(stroke_size // 8, 5)  # Small jitter, proportional to size
+        jitter_x = random.randint(-max_jitter, max_jitter)
+        jitter_y = random.randint(-max_jitter, max_jitter)
         paste_x = int(bbox[0] - 10 + jitter_x)
         paste_y = int(bbox[1] - 10 + jitter_y)
         
@@ -355,7 +395,9 @@ def visualize_context_with_strokes(
                       outline='red', width=2)
     
     ax3.imshow(img_with_strokes)
-    ax3.set_title(f"3. Edit Symbol Replaced with Strokes (target: '{edit_symbol}')", fontsize=12)
+    # Show what was actually replaced (the symbol we drew strokes for)
+    display_symbol = replaced_char if replaced_char else edit_symbol
+    ax3.set_title(f"3. Edit Symbol Replaced with Strokes ('{display_symbol}')", fontsize=12)
     ax3.axis('off')
     
     # === Panel 4: Stroke examples with WAIT states ===
