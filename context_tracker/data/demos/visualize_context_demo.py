@@ -55,25 +55,30 @@ def _compute_ink_bbox(page, span_bbox, scale: int = 10) -> tuple:
     
     PyMuPDF span_bbox includes font ascender/descender, which is much larger
     than the actual visible ink. This computes the tight bbox around visible pixels.
+    
+    IMPORTANT: Clip exactly to span_bbox (no padding) to avoid picking up
+    pixels from neighboring characters in dense expressions like x^2.
     """
     try:
         import numpy as np
         
-        # Clip with small padding
-        pad = 2
+        # Clip EXACTLY to span_bbox - no padding to avoid neighboring chars
         clip = fitz.Rect(
-            max(0, span_bbox[0] - pad),
-            max(0, span_bbox[1] - pad),
-            min(page.rect.width, span_bbox[2] + pad),
-            min(page.rect.height, span_bbox[3] + pad)
+            max(0, span_bbox[0]),
+            max(0, span_bbox[1]),
+            min(page.rect.width, span_bbox[2]),
+            min(page.rect.height, span_bbox[3])
         )
+        
+        if clip.is_empty or clip.width < 1 or clip.height < 1:
+            return span_bbox
         
         # Render at high resolution
         mat = fitz.Matrix(scale, scale)
         pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
         arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
         
-        # Find non-white pixels
+        # Find non-white pixels (ink)
         gray = arr.mean(axis=2)
         ink_pixels = np.where(gray < 250)
         
@@ -83,7 +88,7 @@ def _compute_ink_bbox(page, span_bbox, scale: int = 10) -> tuple:
         y_min, y_max = ink_pixels[0].min(), ink_pixels[0].max()
         x_min, x_max = ink_pixels[1].min(), ink_pixels[1].max()
         
-        # Convert to PDF points
+        # Convert back to PDF points
         return (
             clip.x0 + x_min / scale,
             clip.y0 + y_min / scale,
