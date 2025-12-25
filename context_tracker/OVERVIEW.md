@@ -477,6 +477,191 @@ The **O(n³) → O(n²)** reduction comes from:
 
 ---
 
+## 0.7 SOTA Comparison & Novelty Analysis
+
+Based on review of current state-of-the-art methods (December 2024):
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    SOTA LANDSCAPE: WHERE WE FIT                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                     OFFLINE / BATCH PROCESSING                           │    │
+│  │  ═══════════════════════════════════════════════                        │    │
+│  │                                                                          │    │
+│  │  DeepSeek-OCR (2024):                                                   │    │
+│  │  • "Optical compression" → vision tokens (10× compression, 97% acc)     │    │
+│  │  • Full image → encoder → compressed tokens → decoder → text            │    │
+│  │  • Batch processing, no incremental updates                             │    │
+│  │                                                                          │    │
+│  │  Qwen-VL / Qwen2.5-VL (Alibaba):                                        │    │
+│  │  • Vision encoder + LLM backbone                                        │    │
+│  │  • Full self-attention on all patches + text                            │    │
+│  │  • Excellent multilingual OCR, complex layouts                          │    │
+│  │  • Batch processing, full re-inference on any change                    │    │
+│  │                                                                          │    │
+│  │  TIPS (DeepMind):                                                       │    │
+│  │  • Spatial-aware image-text pretraining                                 │    │
+│  │  • Synthetic descriptions for dense vision tasks                        │    │
+│  │  • Not designed for incremental/real-time scenarios                     │    │
+│  │                                                                          │    │
+│  │  HMER (TAMER, CoMER, PosFormer):                                        │    │
+│  │  • Full expression image → encoder → decoder → LaTeX                    │    │
+│  │  • Tree-aware / coverage / position forest structures                   │    │
+│  │  • Offline recognition only, no editing                                 │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                     ONLINE / INCREMENTAL PROCESSING                      │    │
+│  │  ═══════════════════════════════════════════════                        │    │
+│  │                                                                          │    │
+│  │  InkSight (Google 2024):                                                │    │
+│  │  • Stroke coordinates (x, y, t) → ink tokenizer → decoder              │    │
+│  │  • Online processing of stroke sequences                                │    │
+│  │  • Coordinate-based (no visual patches)                                 │    │
+│  │  • No explicit edit operations (ADD/REPLACE/INSERT)                     │    │
+│  │                                                                          │    │
+│  │  MyScript / Mathpix (Commercial):                                       │    │
+│  │  • Real-time recognition with gesture editing                           │    │
+│  │  • Proprietary architecture (black box)                                 │    │
+│  │  • Has editing but mechanism undisclosed                                │    │
+│  │                                                                          │    │
+│  │  Traditional Online HMER (GRU-based):                                   │    │
+│  │  • (x, y, t) sequences → RNN encoder → decoder                          │    │
+│  │  • No visual patch features, just coordinates                           │    │
+│  │  • No KV-cache, no edit operations                                      │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                     OURS: CONTEXT TRACKER                                │    │
+│  │  ═════════════════════════════════════                                  │    │
+│  │                                                                          │    │
+│  │  • Stroke patches (visual) + text context (symbolic)                    │    │
+│  │  • Sparse attention: causal on text, isolated on patches                │    │
+│  │  • Dual-token [CLS]+[INT] for separated concerns                        │    │
+│  │  • Symbolic commitment: patches → text, then discard                    │    │
+│  │  • O(1) edit via KV-cache + local re-embedding                          │    │
+│  │  • Reasoning trajectory as first-class output                           │    │
+│  │                                                                          │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Detailed Technical Comparison
+
+| Aspect | DeepSeek-OCR | Qwen-VL | InkSight | MyScript | **Ours** |
+|--------|--------------|---------|----------|----------|----------|
+| **Input** | Full image | Full image | Stroke coords | Strokes | **Stroke patches** |
+| **Attention** | Compressed dense | Full dense | RNN-based | Unknown | **Sparse (causal + isolated)** |
+| **Context repr** | Vision tokens | All patches | Coord embeddings | Unknown | **Text tokens (committed)** |
+| **Edit operation** | Full re-infer | Full re-infer | None explicit | Proprietary | **O(1) via KV-cache** |
+| **Memory scaling** | O(compressed) | O(patches) | O(strokes) | Unknown | **O(text tokens)** |
+| **Trajectory** | ❌ | ❌ | ❌ | ❌ | **✅ Logged** |
+| **Real-time** | ❌ Batch | ❌ Batch | ✅ Online | ✅ Online | **✅ Online** |
+| **Open source** | ✅ | ✅ | ✅ | ❌ | **✅ (proposed)** |
+
+### Novelty Analysis: What's Unique to Us?
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    NOVELTY ASSESSMENT                                            │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ✅ CLEARLY NOVEL (No direct prior work found):                                 │
+│  ────────────────────────────────────────────                                   │
+│                                                                                  │
+│  1. Dual-Token [CLS]+[INT] Architecture                                         │
+│     • [CLS] isolated to patches (pure visual)                                   │
+│     • [INT] sees text + [CLS] (semantic reasoning)                              │
+│     • Existing VLMs use single pooling or full cross-attention                  │
+│                                                                                  │
+│  2. Symbolic Commitment Strategy                                                │
+│     • Recognized strokes → text tokens, patches DISCARDED                       │
+│     • Existing methods keep all visual history or use compression               │
+│     • Our approach: O(text) memory vs O(patches) or O(compressed)               │
+│                                                                                  │
+│  3. O(1) Edit Operations via Selective KV-Cache                                 │
+│     • REPLACE: only recompute local patches + [INT]                             │
+│     • Existing VLMs require full re-inference on any edit                       │
+│     • Even DeepSeek-OCR's compression doesn't enable O(1) edits                 │
+│                                                                                  │
+│  4. Reasoning Trajectory as First-Class Output                                  │
+│     • Edit sequence (ADD/REPLACE/DELETE) logged with timestamps                 │
+│     • Alignable to knowledge graphs, tutoring hints                             │
+│     • No existing OCR/HMER system captures HOW user wrote                       │
+│                                                                                  │
+│  5. Local Crop Re-Embedding on Edit                                             │
+│     • Only re-embed edit region, not full canvas                                │
+│     • Combined with text context for full understanding                         │
+│     • Novel hybrid of local visual + global symbolic                            │
+│                                                                                  │
+│  ────────────────────────────────────────────                                   │
+│  ⚠️ SIMILAR CONCEPTS EXIST (But our application is novel):                      │
+│  ────────────────────────────────────────────                                   │
+│                                                                                  │
+│  6. Sparse Attention Patterns                                                   │
+│     • Causal masking well-known (GPT, etc.)                                     │
+│     • BUT: our specific pattern (isolated patches + causal text) is novel       │
+│     • DeepSeek uses compression, not structured sparsity                        │
+│                                                                                  │
+│  7. 2D Positional Encoding                                                      │
+│     • 2D RoPE exists in some vision models                                      │
+│     • Our application to edit localization (superscript vs adjacent) may be new │
+│                                                                                  │
+│  8. Multimodal Fusion (Text + Visual)                                           │
+│     • Common in VLMs (Qwen-VL, LLaVA, etc.)                                     │
+│     • BUT: our text is COMMITTED recognition, not input text                    │
+│     • The "snowball" incremental fusion is novel                                │
+│                                                                                  │
+│  ────────────────────────────────────────────                                   │
+│  ❌ NOT NOVEL (Already well-established):                                        │
+│  ────────────────────────────────────────────                                   │
+│                                                                                  │
+│  9. Autoregressive Decoding                                                     │
+│     • Standard in all LLM-based OCR                                             │
+│                                                                                  │
+│  10. Patch Embedding for Vision                                                 │
+│      • Standard since ViT (2020)                                                │
+│                                                                                  │
+│  11. KV-Cache for Efficient Inference                                           │
+│      • Standard in all transformer decoders                                     │
+│      • Our SELECTIVE update strategy is the novel part                          │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Academic Contribution Summary
+
+| Contribution Area | Novelty Level | Venue Fit |
+|-------------------|---------------|-----------|
+| **Dual-token [CLS]+[INT] for O(1) edits** | ⭐⭐⭐ High | NeurIPS/ICML (architecture) |
+| **Symbolic commitment (patch → text)** | ⭐⭐⭐ High | CVPR/ICCV (efficient VLM) |
+| **Reasoning trajectory capture** | ⭐⭐⭐ High | AAAI/IUI (AI + education) |
+| **Local crop + global text hybrid** | ⭐⭐ Medium | ECCV (document understanding) |
+| **Sparse attention for HMER** | ⭐⭐ Medium | ACL (efficient multimodal) |
+| **2D RoPE for edit localization** | ⭐ Incremental | Workshop paper |
+
+### Key Differentiator Statement
+
+> **What no existing system does:**
+> 
+> Existing methods either (a) process full images in batch mode (DeepSeek-OCR, Qwen-VL, HMER), 
+> or (b) process stroke coordinates without visual patches (InkSight, GRU-based).
+> 
+> **Context Tracker uniquely combines:**
+> 1. Visual patch features (shape recognition)
+> 2. Incremental text context (symbolic knowledge)
+> 3. O(1) edit capability (practical real-time)
+> 4. Reasoning trajectory (cognitive insight)
+> 
+> This combination addresses a gap: **real-time interactive math editing with reasoning capture**.
+
+---
+
 ## 1. System Overview
 
 ```
