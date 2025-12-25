@@ -464,10 +464,10 @@ class StrokeRenderer:
                        augment: bool = True,
                        variation_indices: Optional[List[int]] = None) -> np.ndarray:
         """
-        Render a symbol to a specific target size with high-quality scaling.
+        Render a symbol directly to a specific target size.
         
-        This is the recommended method for rendering strokes to match a bounding box.
-        It renders at high resolution internally then scales down for quality.
+        Renders directly at target resolution - no downsampling needed since
+        we have real stroke annotations with natural variation.
         
         Args:
             symbol: Symbol character to render
@@ -483,8 +483,8 @@ class StrokeRenderer:
         if sym_data is None:
             return np.zeros((target_size[1], target_size[0]), dtype=np.uint8)
         
-        # Render at higher resolution for quality
-        render_size = max(target_size[0], target_size[1], 64) * 4
+        # Render directly at target size (use max dimension for square canvas)
+        render_size = max(target_size[0], target_size[1])
         
         # Temporarily set canvas size
         original_size = self.canvas_size
@@ -497,18 +497,23 @@ class StrokeRenderer:
             num_strokes = total_strokes
         num_strokes = min(num_strokes, total_strokes)
         
-        # Select variations
+        # Select variations (this is where natural variation comes from)
         if variation_indices is None:
             variation_indices = [
                 random.randint(0, len(sym_data.strokes[name]) - 1)
                 for name in stroke_names
             ]
         
-        # Get augmentation params
+        # Get augmentation params - use thicker strokes for small sizes
         aug_params = self.augmentation.sample() if augment else {
             'jitter': 0, 'rotation': 0, 'scale': 1.0,
             'thickness': 3.0, 'translate': (0, 0)
         }
+        
+        # Scale thickness based on render size (thicker for small targets)
+        # Minimum thickness of 2 for visibility at small sizes
+        base_thickness = aug_params['thickness']
+        scaled_thickness = max(2.0, base_thickness * render_size / 64)
         
         # Collect strokes (only num_strokes)
         all_strokes: List[StrokeData] = []
@@ -540,32 +545,23 @@ class StrokeRenderer:
             
             all_strokes.append(stroke)
         
-        # Render
-        canvas = self._render_strokes(all_strokes, aug_params['thickness'])
+        # Render directly at target size with scaled thickness
+        canvas = self._render_strokes(all_strokes, scaled_thickness)
         
         # Restore canvas size
         self.canvas_size = original_size
         
-        # Scale down to target size
-        if HAS_PIL:
-            img = Image.fromarray((canvas * 255).astype(np.uint8), mode='L')
-            img = img.resize((target_size[0], target_size[1]), Image.LANCZOS)
-            arr = np.array(img, dtype=np.float32)
-            
-            # LANCZOS downsampling averages thin strokes, reducing intensity
-            # Normalize to ensure strokes are clearly visible (target ~200-255 max)
-            if arr.max() > 0:
-                arr = arr * (220.0 / max(arr.max(), 1))
-            return np.clip(arr, 0, 255).astype(np.uint8)
-        else:
-            # Fallback: simple resize
-            from scipy.ndimage import zoom
-            scale_y = target_size[1] / canvas.shape[0]
-            scale_x = target_size[0] / canvas.shape[1]
-            arr = zoom(canvas, (scale_y, scale_x)) * 255
-            if arr.max() > 0:
-                arr = arr * (220.0 / max(arr.max(), 1))
-            return np.clip(arr, 0, 255).astype(np.uint8)
+        # Convert to uint8 (values are already 0-1 from _render_strokes)
+        arr = (canvas * 255).astype(np.uint8)
+        
+        # Crop/pad to exact target size if needed
+        if arr.shape[0] != target_size[1] or arr.shape[1] != target_size[0]:
+            if HAS_PIL:
+                img = Image.fromarray(arr, mode='L')
+                img = img.resize((target_size[0], target_size[1]), Image.NEAREST)
+                arr = np.array(img)
+        
+        return arr
     
     def render_all_variations(self, symbol: str, augment: bool = False) -> List[np.ndarray]:
         """Render all variation combinations for a symbol."""
