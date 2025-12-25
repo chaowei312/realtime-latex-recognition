@@ -406,7 +406,10 @@ def build_training_dataset(
     Returns:
         Tuple of (ChunkPool, List[ComposedTrainingExample])
     """
-    from ..synthetic_case_generator import CaseGenerator
+    try:
+        from ..synthetic_case_generator import CaseGenerator
+    except ImportError:
+        from synthetic_case_generator import CaseGenerator
     
     random.seed(seed)
     
