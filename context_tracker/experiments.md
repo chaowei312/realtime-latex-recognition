@@ -106,6 +106,86 @@ Given the existing work, our key research questions are:
 
 ---
 
+## 0.6 Input/Output Token Sequence Format
+
+Before diving into architecture details, here's the concrete token format:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    INPUT/OUTPUT TOKEN SEQUENCE                                   │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  INPUT SEQUENCE:                                                                 │
+│  ═══════════════                                                                 │
+│                                                                                  │
+│  ┌───────────────────┬─────┬─────────────────────┬─────┬─────┬──────────────┐  │
+│  │   LaTeX Context   │[SEP]│   Stroke Patches    │[CLS]│[INT]│  AR Decode   │  │
+│  ├───────────────────┼─────┼─────────────────────┼─────┼─────┼──────────────┤  │
+│  │ <x> <+> <y> <^{>  │     │ [P₀] [P₁] [P₂] [P₃]│     │     │ [e₁]...[EOS] │  │
+│  │ <2> <}>           │     │                     │     │     │              │  │
+│  └───────────────────┴─────┴─────────────────────┴─────┴─────┴──────────────┘  │
+│         │                           │               │     │          │         │
+│    Committed text              Visual patches    Local  Global   Output        │
+│    (causal attn)               (current stroke)  recog  reason   tokens        │
+│                                                                                  │
+│  CONCRETE EXAMPLES:                                                             │
+│  ══════════════════                                                             │
+│                                                                                  │
+│  Example 1: ADD (append superscript)                                            │
+│  ────────────────────────────────────                                           │
+│  Context: "x + y"     Stroke: draws "²"     Result: "x + y^{2}"                │
+│                                                                                  │
+│  Input:  <x> <+> <y> [SEP] [P₀][P₁][P₂][P₃] [CLS] [INT]                        │
+│  Output: [ADD] <^{> <2> <}> [EOS]                                               │
+│                                                                                  │
+│                                                                                  │
+│  Example 2: REPLACE (correct symbol)                                            │
+│  ───────────────────────────────────                                            │
+│  Context: "x^{2}"     Stroke: draws "3" over "2"     Result: "x^{3}"           │
+│                                                                                  │
+│  Input:  <x> <^{> <2> <}> [SEP] [P₀][P₁][P₂] [CLS] [INT]                       │
+│  Output: [REPLACE] [pos=2] <3> [EOS]                                            │
+│                                                                                  │
+│                                                                                  │
+│  Example 3: WAIT (incomplete stroke)                                            │
+│  ───────────────────────────────────                                            │
+│  Context: "x + "      Stroke: 2/3 strokes of "α"     Result: wait              │
+│                                                                                  │
+│  Input:  <x> <+> [SEP] [P₀][P₁] [CLS] [INT]    (partial α)                     │
+│  Output: [WAIT]                                                                  │
+│                                                                                  │
+│                                                                                  │
+│  Example 4: INSERT (add in middle)                                              │
+│  ─────────────────────────────────                                              │
+│  Context: "xy"        Stroke: draws "+" between     Result: "x + y"            │
+│                                                                                  │
+│  Input:  <x> <y> [SEP] [P₀][P₁][P₂] [CLS] [INT]                                │
+│  Output: [INSERT] [pos=1] <+> [EOS]                                             │
+│                                                                                  │
+│                                                                                  │
+│  Example 5: WRAP (structural change)                                            │
+│  ───────────────────────────────────                                            │
+│  Context: "x + 1"     Stroke: draws "─" below (fraction line)                  │
+│                                                                                  │
+│  Input:  <x> <+> <1> [SEP] [P₀][P₁]...[Pₙ] [CLS] [INT]                         │
+│  Output: [WRAP] <\frac{> [COPY_PREV] <}{}> [EOS]                                │
+│          → Result: "\frac{x + 1}{}"                                             │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Token Vocabulary Summary
+
+| Category | Examples | Count |
+|----------|----------|-------|
+| **Special** | `[SEP]`, `[CLS]`, `[INT]`, `[EOS]`, `[PAD]` | ~10 |
+| **Operations** | `[ADD]`, `[REPLACE]`, `[INSERT]`, `[WRAP]`, `[WAIT]` | ~8 |
+| **Position** | `[pos=0]`...`[pos=255]` | 256 |
+| **LaTeX symbols** | `<x>`, `<\frac>`, `<\alpha>`, `<^{>`, `<}>` | ~800 |
+| **Total** | | ~1074 |
+
+---
+
 ## 1. Core Architecture Design
 
 ### 1.1 Multimodal Sequence Architecture (Primary Design)
@@ -851,6 +931,109 @@ NAR:
 - Option A has **richer visual features** because [CLS] dedicates all attention to patches
 - Option B may have **better ambiguity resolution** (e.g., "1" vs "l") if context helps
 - For symbols with clear visual identity, Option A should match or beat Option B
+
+### 5.5.1 Option C: Hybrid (Confidence-Gated Context)
+
+A third option combines the benefits of both:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  OPTION C: HYBRID (Confidence-Gated Context Access)                  │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  STAGE 1: Isolated Recognition (like Option A)                      │
+│  ─────────────────────────────────────────────                      │
+│                                                                      │
+│    [P₀][P₁][P₂][P₃] → [CLS] → softmax predictions                  │
+│                                                                      │
+│    Example: { "1": 0.45, "l": 0.40, "I": 0.10, ... }                │
+│                                                                      │
+│    Confidence = max_prob = 0.45                                     │
+│                                                                      │
+│    IF confidence > threshold (e.g., 0.7):                           │
+│        → Output directly (skip context lookup)                      │
+│    ELSE:                                                            │
+│        → Proceed to Stage 2                                         │
+│                                                                      │
+│  STAGE 2: Context-Assisted Disambiguation (when needed)             │
+│  ─────────────────────────────────────────────────────              │
+│                                                                      │
+│    [INT] attends to:                                                │
+│      • LaTeX context: "x + y ="                                     │
+│      • [CLS] visual embedding                                       │
+│      • Top-k candidate tokens: ["1", "l", "I"]                      │
+│                                                                      │
+│    Context reasoning: "math expression → likely digit"              │
+│                                                                      │
+│    Output: "1" with context-boosted confidence                      │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+| Aspect | Option A | Option B | Option C (Hybrid) |
+|--------|----------|----------|-------------------|
+| Visual purity | ✅ Pure | ❌ Diluted | ✅ Pure (stage 1) |
+| Context disambiguation | ❌ None | ✅ Always | ✅ When needed |
+| Computational cost | Low | High | Adaptive |
+| REPLACE latency | O(1) | O(n) | O(1) usually |
+| Complexity | Medium | Low | High |
+
+### 5.5.2 Visual Comparison of All Options
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                    ATTENTION PATTERN VISUAL SUMMARY                              │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Legend: ■ = attends, · = masked, ▒ = conditional (hybrid only)                 │
+│                                                                                  │
+│  ═══════════════════════════════════════════════════════════════════════════    │
+│                                                                                  │
+│  OPTION A: Isolated Dual-Token          OPTION B: Context-Aware Single          │
+│  ───────────────────────────            ────────────────────────────            │
+│                                                                                  │
+│       LaTeX  Patch  CLS INT                  LaTeX  Patch  CLS                  │
+│      ┌─────┬─────┬────┬────┐               ┌─────┬─────┬────┐                   │
+│ LaTeX│ ■■■ │     │    │    │          LaTeX│ ■■■ │     │    │                   │
+│      │ ■■■ │     │    │    │               │ ■■■ │     │    │                   │
+│      ├─────┼─────┼────┼────┤               ├─────┼─────┼────┤                   │
+│ Patch│     │ ■■■ │    │    │          Patch│ ■■■ │ ■■■ │    │  ← sees LaTeX!   │
+│      │     │ ■■■ │    │    │               │ ■■■ │ ■■■ │    │                   │
+│      ├─────┼─────┼────┼────┤               ├─────┼─────┼────┤                   │
+│  CLS │     │ ■■■ │ ■  │    │           CLS │ ■■■ │ ■■■ │ ■  │  ← sees ALL      │
+│      ├─────┼─────┼────┼────┤               └─────┴─────┴────┘                   │
+│  INT │ ■■■ │     │ ■  │ ■  │               (no INT needed)                      │
+│      └─────┴─────┴────┴────┘                                                    │
+│                                                                                  │
+│                                                                                  │
+│  OPTION C: Hybrid (Two-Stage)                                                   │
+│  ────────────────────────────                                                   │
+│                                                                                  │
+│  Stage 1 (always):           Stage 2 (if low confidence):                       │
+│       Patch  CLS                   LaTeX  CLS  INT                              │
+│      ┌─────┬────┐                 ┌─────┬────┬────┐                             │
+│ Patch│ ■■■ │    │            LaTeX│ ■■■ │    │    │                             │
+│      │ ■■■ │    │                 ├─────┼────┼────┤                             │
+│      ├─────┼────┤              CLS│ ▒▒▒ │ ■  │    │  ← conditional access       │
+│  CLS │ ■■■ │ ■  │                 ├─────┼────┼────┤                             │
+│      └─────┴────┘              INT│ ■■■ │ ■  │ ■  │                             │
+│   (pure visual)                   └─────┴────┴────┘                             │
+│                                   (context reasoning)                           │
+│                                                                                  │
+│  ═══════════════════════════════════════════════════════════════════════════    │
+│                                                                                  │
+│  COMPUTATIONAL COST COMPARISON                                                  │
+│  ─────────────────────────────                                                  │
+│                                                                                  │
+│                    Per Stroke              REPLACE Operation                    │
+│  Option A:         O(p² + n)               O(p²) + O(1)  ← fastest edit        │
+│  Option B:         O((n+p)²)               O((n+p)²)     ← full recompute      │
+│  Option C:         O(p²) to O(p² + n²)     O(p²) usually ← adaptive            │
+│                                                                                  │
+│  where: n = context length, p = patch count                                     │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
 
 **Experimental Setup:**
 
