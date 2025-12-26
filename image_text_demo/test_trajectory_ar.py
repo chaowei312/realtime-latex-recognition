@@ -573,19 +573,21 @@ class DecoderLayer(nn.Module):
 
 def train_epoch(model, dataloader, optimizer, criterion, device):
     """Train for one epoch."""
+    import gc
+    
     model.train()
     total_loss = 0
     total_correct = 0
     total_tokens = 0
     
     pbar = tqdm(dataloader, desc="Training", leave=False)
-    for batch in pbar:
-        patches = batch['patches'].to(device)
-        patch_mask = batch['patch_mask'].to(device)
-        input_ids = batch['input_ids'].to(device)
-        target_ids = batch['target_ids'].to(device)
+    for batch_idx, batch in enumerate(pbar):
+        patches = batch['patches'].to(device, non_blocking=True)
+        patch_mask = batch['patch_mask'].to(device, non_blocking=True)
+        input_ids = batch['input_ids'].to(device, non_blocking=True)
+        target_ids = batch['target_ids'].to(device, non_blocking=True)
         
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)  # More memory efficient
         
         output = model(patches, input_ids, patch_mask)
         logits = output['logits']
@@ -600,15 +602,24 @@ def train_epoch(model, dataloader, optimizer, criterion, device):
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         
-        # Metrics
-        total_loss += loss.item() * target_ids.size(0)
+        # Metrics (detach to avoid holding graph)
+        total_loss += loss.detach().item() * target_ids.size(0)
         
-        pred = logits.argmax(dim=-1)
+        pred = logits.detach().argmax(dim=-1)
         mask = target_ids != model.pad_id
         total_correct += ((pred == target_ids) & mask).sum().item()
         total_tokens += mask.sum().item()
         
         pbar.set_postfix(loss=loss.item(), acc=total_correct/max(total_tokens, 1))
+        
+        # Clean up batch tensors from CPU RAM
+        del batch, patches, patch_mask, input_ids, target_ids, output, logits, loss, pred, mask
+        
+        # Periodic garbage collection (every 100 batches)
+        if batch_idx % 100 == 0:
+            gc.collect()
+            if device == "cuda":
+                torch.cuda.empty_cache()
     
     return total_loss / len(dataloader.dataset), total_correct / max(total_tokens, 1)
 
@@ -616,16 +627,18 @@ def train_epoch(model, dataloader, optimizer, criterion, device):
 @torch.no_grad()
 def evaluate(model, dataloader, criterion, device, idx_to_char, bos_id, eos_id, pad_id):
     """Evaluate model."""
+    import gc
+    
     model.eval()
     total_loss = 0
     total_cer = 0
     num_samples = 0
     
-    for batch in tqdm(dataloader, desc="Evaluating", leave=False):
-        patches = batch['patches'].to(device)
-        patch_mask = batch['patch_mask'].to(device)
-        input_ids = batch['input_ids'].to(device)
-        target_ids = batch['target_ids'].to(device)
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", leave=False)):
+        patches = batch['patches'].to(device, non_blocking=True)
+        patch_mask = batch['patch_mask'].to(device, non_blocking=True)
+        input_ids = batch['input_ids'].to(device, non_blocking=True)
+        target_ids = batch['target_ids'].to(device, non_blocking=True)
         targets = batch['texts']
         
         # Compute loss
@@ -655,6 +668,15 @@ def evaluate(model, dataloader, criterion, device, idx_to_char, bos_id, eos_id, 
             cer = compute_cer(pred_str, target_str)
             total_cer += cer
             num_samples += 1
+        
+        # Clean up batch
+        del batch, patches, patch_mask, input_ids, target_ids, output, logits, loss, generated
+        
+        # Periodic cleanup
+        if batch_idx % 50 == 0:
+            gc.collect()
+            if device == "cuda":
+                torch.cuda.empty_cache()
     
     return total_loss / len(dataloader.dataset), total_cer / max(num_samples, 1)
 
@@ -1143,15 +1165,20 @@ def train_single_variant(args, variant: str) -> Dict:
     
     print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Vocab: {vocab_size}")
     
-    # Create dataloaders (fast since patches are pre-computed)
+    # Create dataloaders
+    # NOTE: For lazy-loading datasets, use low num_workers
+    # to avoid RAM explosion from worker caching
+    # num_workers=2 balances speed vs memory
+    num_workers = 2
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=collate_stroke_lines,
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True,
+        num_workers=num_workers,
+        pin_memory=True if device == "cuda" else False,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
     
     val_loader = DataLoader(
@@ -1159,9 +1186,9 @@ def train_single_variant(args, variant: str) -> Dict:
         batch_size=args.batch_size,
         shuffle=False,
         collate_fn=collate_stroke_lines,
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=True,
+        num_workers=num_workers,
+        pin_memory=True if device == "cuda" else False,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
     
     # Create model

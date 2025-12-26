@@ -8,6 +8,9 @@ Core building blocks for the model architecture:
 - ConvEncoder: Convolutional feature encoder
 - StrokePatchEncoder: Configurable stroke patch encoder (from JSON config)
 - ConfigurableAttention: Attention with configurable mask patterns (from JSON config)
+- StrokeModificationModule: Multi-head stroke selection gate (SMM)
+- RelationshipTensor: LaTeX parsing to relationship tensor for position prediction
+- TreeAwarePositionModule: Tree-aware position prediction during AR (TPM)
 """
 
 from .swiglu import SwiGLU, SwiGLUFFN
@@ -30,6 +33,30 @@ from .configurable_attention import (
     list_available_patterns,
     MaskType,
     TokenType,
+)
+from .stroke_modification import (
+    StrokeModificationModule,
+    StrokeModificationLoss,
+    create_stroke_modification_module,
+)
+from .relationship_tensor import (
+    RelationType,
+    ParsedLatex,
+    ParsedNode,
+    LatexRelationshipParser,
+    RelationshipTensorModule,
+    parse_latex,
+    visualize_relationship_tensor,
+    visualize_tree,
+)
+from .position_head import (
+    TreeAwarePositionModule,
+    TPMLoss,
+    create_tpm,
+    # Aliases
+    PositionHead,
+    PositionHeadLoss,
+    create_position_head,
 )
 
 __all__ = [
@@ -67,5 +94,26 @@ __all__ = [
     'list_available_patterns',
     'MaskType',
     'TokenType',
+    # Stroke Modification Module (SMM)
+    'StrokeModificationModule',
+    'StrokeModificationLoss',
+    'create_stroke_modification_module',
+    # Relationship Tensor
+    'RelationType',
+    'ParsedLatex',
+    'ParsedNode',
+    'LatexRelationshipParser',
+    'RelationshipTensorModule',
+    'parse_latex',
+    'visualize_relationship_tensor',
+    'visualize_tree',
+    # Tree-aware Position Module (TPM)
+    'TreeAwarePositionModule',
+    'TPMLoss',
+    'create_tpm',
+    # Aliases
+    'PositionHead',
+    'PositionHeadLoss',
+    'create_position_head',
 ]
 

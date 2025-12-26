@@ -35,44 +35,45 @@ class MathWritingSample:
     
 
 def parse_inkml(filepath: Path) -> Optional[MathWritingSample]:
-    """Parse an InkML file into a MathWritingSample."""
+    """Parse an InkML file into a MathWritingSample. Memory-efficient."""
     try:
-        tree = ET.parse(filepath)
-        root = tree.getroot()
-        
-        # Handle namespace
-        ns = {'ink': 'http://www.w3.org/2003/InkML'}
-        
-        # Get annotations
+        # Use iterparse to avoid holding entire tree in memory
         sample_id = filepath.stem
         label = ""
         normalized_label = ""
         ink_method = "human"
-        
-        for ann in root.findall('.//ink:annotation', ns):
-            ann_type = ann.get('type')
-            if ann_type == 'label':
-                label = ann.text or ""
-            elif ann_type == 'normalizedLabel':
-                normalized_label = ann.text or ""
-            elif ann_type == 'inkCreationMethod':
-                ink_method = ann.text or "human"
-            elif ann_type == 'sampleId':
-                sample_id = ann.text or sample_id
-        
-        # Parse strokes
         strokes = []
-        for trace in root.findall('.//ink:trace', ns):
-            if trace.text:
-                points = []
-                # Format: "x y t, x y t, ..."
-                for point_str in trace.text.strip().split(','):
-                    parts = point_str.strip().split()
-                    if len(parts) >= 3:
-                        x, y, t = float(parts[0]), float(parts[1]), float(parts[2])
-                        points.append((x, y, t))
-                if points:
-                    strokes.append(points)
+        
+        # Parse with context manager to ensure file is closed
+        for event, elem in ET.iterparse(str(filepath), events=['end']):
+            tag = elem.tag.split('}')[-1]  # Remove namespace
+            
+            if tag == 'annotation':
+                ann_type = elem.get('type')
+                text = elem.text or ""
+                if ann_type == 'label':
+                    label = text
+                elif ann_type == 'normalizedLabel':
+                    normalized_label = text
+                elif ann_type == 'inkCreationMethod':
+                    ink_method = text
+                elif ann_type == 'sampleId':
+                    sample_id = text
+                # Clear element to free memory
+                elem.clear()
+                
+            elif tag == 'trace':
+                if elem.text:
+                    points = []
+                    for point_str in elem.text.strip().split(','):
+                        parts = point_str.strip().split()
+                        if len(parts) >= 3:
+                            x, y, t = float(parts[0]), float(parts[1]), float(parts[2])
+                            points.append((x, y, t))
+                    if points:
+                        strokes.append(points)
+                # Clear element to free memory
+                elem.clear()
         
         if not strokes or not normalized_label:
             return None
@@ -85,7 +86,6 @@ def parse_inkml(filepath: Path) -> Optional[MathWritingSample]:
             ink_method=ink_method,
         )
     except Exception as e:
-        print(f"Error parsing {filepath}: {e}")
         return None
 
 
@@ -301,7 +301,6 @@ class MathWritingDataset(Dataset):
         sample = parse_inkml(filepath)
         
         if sample is None:
-            # Return dummy data for failed parses
             return self._get_dummy_sample()
         
         # Render strokes and extract patches
@@ -312,15 +311,22 @@ class MathWritingDataset(Dataset):
         text = sample.normalized_label
         input_ids, target_ids = self._tokenize_text(text)
         
+        # Get values before cleanup
+        num_strokes = len(sample.strokes)
+        text_len = len(text)
+        
+        # Explicitly delete large objects to help garbage collection
+        del sample, canvas
+        
         return {
             'patches': patches,
             'stroke_ids': stroke_ids,
             'num_patches': patches.shape[0],
-            'num_strokes': len(sample.strokes),
+            'num_strokes': num_strokes,
             'input_ids': input_ids,
             'target_ids': target_ids,
             'text': text,
-            'text_len': len(text),
+            'text_len': text_len,
         }
     
     def _get_dummy_sample(self) -> Dict:
