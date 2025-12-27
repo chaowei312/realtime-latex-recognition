@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Context Tracker - Training Dashboard</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0d1117;
+            --bg-card: #161b22;
+            --bg-hover: #21262d;
+            --border: #30363d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-orange: #d29922;
+            --accent-purple: #a371f7;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        h1 .icon {
+            font-size: 28px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge.stopped {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--accent-red);
+        }
+
+        .status-badge.running {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--accent-green);
+        }
+
+        .status-badge .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .status-badge.running .dot {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .controls {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-start {
+            background: var(--accent-green);
+            color: #000;
+        }
+
+        .btn-start:hover:not(:disabled) {
+            background: #46c05a;
+        }
+
+        .btn-stop {
+            background: var(--accent-orange);
+            color: #000;
+        }
+
+        .btn-stop:hover:not(:disabled) {
+            background: #e0a72d;
+        }
+
+        .btn-kill {
+            background: var(--accent-red);
+            color: #fff;
+        }
+
+        .btn-kill:hover:not(:disabled) {
+            background: #ff6b61;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .metric-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .metric-card .label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .metric-card .value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 28px;
+            font-weight: 600;
+        }
+
+        .metric-card .value.ar { color: var(--accent-blue); }
+        .metric-card .value.tpm { color: var(--accent-green); }
+        .metric-card .value.smm { color: var(--accent-purple); }
+        .metric-card .value.total { color: var(--accent-orange); }
+
+        .chart-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .chart-container h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text-secondary);
+        }
+
+        .chart-wrapper {
+            height: 350px;
+            position: relative;
+        }
+
+        .log-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .log-container h2 {
+            font-size: 16px;
+            font-weight: 600;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+
+        .log-output {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            padding: 16px 20px;
+            height: 250px;
+            overflow-y: auto;
+            background: #0a0c10;
+        }
+
+        .log-output .line {
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-output .line.metric {
+            color: var(--accent-green);
+        }
+
+        .log-output .line.eval {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        .config-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .config-panel h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text-secondary);
+        }
+
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+        }
+
+        .config-field label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .config-field input {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg-dark);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+        }
+
+        .config-field input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .config-row {
+            display: flex;
+            gap: 16px;
+        }
+
+        .config-row .config-field {
+            flex: 1;
+        }
+
+        .info-row {
+            display: flex;
+            gap: 24px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 12px;
+        }
+
+        .info-row span {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .info-row .value {
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>
+                <span class="icon">🧠</span>
+                Context Tracker Training
+            </h1>
+            <div class="status-badge" id="statusBadge">
+                <span class="dot"></span>
+                <span id="statusText">Stopped</span>
+            </div>
+        </header>
+
+        <div class="config-panel">
+            <h2>Training Configuration</h2>
+            <div class="config-grid">
+                <div class="config-field">
+                    <label>Batch Size</label>
+                    <input type="number" id="batchSize" value="32" min="1" max="256">
+                </div>
+                <div class="config-field">
+                    <label>Learning Rate</label>
+                    <input type="text" id="learningRate" value="1e-4">
+                </div>
+                <div class="config-field">
+                    <label>Epochs</label>
+                    <input type="number" id="epochs" value="10" min="1" max="100">
+                </div>
+                <div class="config-field">
+                    <label>Warmup Steps</label>
+                    <input type="number" id="warmupSteps" value="1000" min="0" max="10000">
+                </div>
+            </div>
+            <div class="config-grid" style="margin-top: 12px;">
+                <div class="config-field">
+                    <label>Log Interval</label>
+                    <input type="number" id="logInterval" value="50" min="1">
+                </div>
+                <div class="config-field">
+                    <label>Eval Interval</label>
+                    <input type="number" id="evalInterval" value="500" min="100">
+                </div>
+                <div class="config-field">
+                    <label>Save Interval</label>
+                    <input type="number" id="saveInterval" value="2500" min="500">
+                </div>
+                <div class="config-field">
+                    <label>Num Workers</label>
+                    <input type="number" id="numWorkers" value="0" min="0" max="8">
+                </div>
+            </div>
+            <div class="config-grid" style="margin-top: 12px;">
+                <div class="config-field">
+                    <label>λ Position (TPM)</label>
+                    <input type="number" id="lambdaPosition" value="1.0" step="0.1" min="0">
+                </div>
+                <div class="config-field">
+                    <label>λ Stroke (SMM)</label>
+                    <input type="number" id="lambdaStroke" value="0.5" step="0.1" min="0">
+                </div>
+                <div class="config-field">
+                    <label>Max Grad Norm</label>
+                    <input type="number" id="maxGradNorm" value="1.0" step="0.1" min="0">
+                </div>
+                <div class="config-field">
+                    <label>Weight Decay</label>
+                    <input type="number" id="weightDecay" value="0.01" step="0.001" min="0">
+                </div>
+            </div>
+            <div class="config-row" style="margin-top: 12px;">
+                <div class="config-field" style="flex: 2;">
+                    <label>Experiment Name</label>
+                    <input type="text" id="experimentName" value="dashboard_run" placeholder="experiment_name">
+                </div>
+                <div class="config-field" style="flex: 3;">
+                    <label>Log Directory</label>
+                    <input type="text" id="logDir" value="logs/dashboard_train" placeholder="logs/my_experiment">
+                </div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-start" id="btnStart" onclick="startTraining()">
+                ▶ Start Training
+            </button>
+            <button class="btn btn-stop" id="btnStop" onclick="stopTraining()" disabled>
+                ⏸ Stop Gracefully
+            </button>
+            <button class="btn btn-kill" id="btnKill" onclick="killTraining()" disabled>
+                ■ Force Kill
+            </button>
+        </div>
+
+        <div class="grid">
+            <div class="metric-card">
+                <div class="label">Total Loss</div>
+                <div class="value total" id="totalLoss">—</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">AR Loss (Symbol)</div>
+                <div class="value ar" id="arLoss">—</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">TPM Loss (Position)</div>
+                <div class="value tpm" id="tpmLoss">—</div>
+            </div>
+            <div class="metric-card">
+                <div class="label">SMM Loss (Stroke)</div>
+                <div class="value smm" id="smmLoss">—</div>
+            </div>
+        </div>
+
+        <div class="info-row">
+            <span>Step: <span class="value" id="currentStep">0</span></span>
+            <span>Epoch: <span class="value" id="currentEpoch">0</span></span>
+            <span>LR: <span class="value" id="currentLR">—</span></span>
+            <span>Elapsed: <span class="value" id="elapsedTime">0:00:00</span></span>
+        </div>
+
+        <div class="chart-container">
+            <h2>Training Loss Curves</h2>
+            <div class="chart-wrapper">
+                <canvas id="lossChart"></canvas>
+            </div>
+        </div>
+
+        <div class="log-container">
+            <h2>Training Log</h2>
+            <div class="log-output" id="logOutput"></div>
+        </div>
+    </div>
+
+    <script>
+        // Socket.IO connection
+        const socket = io();
+        
+        // Chart setup
+        const ctx = document.getElementById('lossChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: 'Total',
+                        data: [],
+                        borderColor: '#d29922',
+                        backgroundColor: 'rgba(210, 153, 34, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 0,
+                    },
+                    {
+                        label: 'AR (Symbol)',
+                        data: [],
+                        borderColor: '#58a6ff',
+                        backgroundColor: 'rgba(88, 166, 255, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 0,
+                    },
+                    {
+                        label: 'TPM (Position)',
+                        data: [],
+                        borderColor: '#3fb950',
+                        backgroundColor: 'rgba(63, 185, 80, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 0,
+                    },
+                    {
+                        label: 'SMM (Stroke)',
+                        data: [],
+                        borderColor: '#a371f7',
+                        backgroundColor: 'rgba(163, 113, 247, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 0,
+                    },
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    intersect: false,
+                    mode: 'index',
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: {
+                            color: '#8b949e',
+                            usePointStyle: true,
+                            padding: 20,
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: '#161b22',
+                        titleColor: '#e6edf3',
+                        bodyColor: '#8b949e',
+                        borderColor: '#30363d',
+                        borderWidth: 1,
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            color: '#21262d',
+                        },
+                        ticks: {
+                            color: '#8b949e',
+                        },
+                        title: {
+                            display: true,
+                            text: 'Step',
+                            color: '#8b949e',
+                        }
+                    },
+                    y: {
+                        grid: {
+                            color: '#21262d',
+                        },
+                        ticks: {
+                            color: '#8b949e',
+                        },
+                        title: {
+                            display: true,
+                            text: 'Loss',
+                            color: '#8b949e',
+                        }
+                    }
+                }
+            }
+        });
+
+        // State
+        let isRunning = false;
+
+        // Socket event handlers
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+
+        socket.on('training_state', (state) => {
+            updateUI(state);
+        });
+
+        socket.on('training_update', (data) => {
+            // Update metrics
+            document.getElementById('totalLoss').textContent = data.total_loss.toFixed(4);
+            document.getElementById('arLoss').textContent = data.ar_loss.toFixed(4);
+            document.getElementById('tpmLoss').textContent = data.tpm_loss.toFixed(4);
+            document.getElementById('smmLoss').textContent = data.smm_loss.toFixed(4);
+            document.getElementById('currentStep').textContent = data.step;
+            document.getElementById('currentEpoch').textContent = data.epoch;
+            document.getElementById('currentLR').textContent = data.lr.toExponential(2);
+
+            // Update chart
+            chart.data.labels.push(data.step);
+            chart.data.datasets[0].data.push(data.total_loss);
+            chart.data.datasets[1].data.push(data.ar_loss);
+            chart.data.datasets[2].data.push(data.tpm_loss);
+            chart.data.datasets[3].data.push(data.smm_loss);
+
+            // Keep last 500 points
+            if (chart.data.labels.length > 500) {
+                chart.data.labels.shift();
+                chart.data.datasets.forEach(ds => ds.data.shift());
+            }
+
+            chart.update('none');
+        });
+
+        socket.on('log_line', (data) => {
+            const logOutput = document.getElementById('logOutput');
+            const line = document.createElement('div');
+            line.className = 'line';
+            
+            if (data.line.includes('Step') && data.line.includes('Loss')) {
+                line.className += ' metric';
+            } else if (data.line.includes('EVAL')) {
+                line.className += ' eval';
+            }
+            
+            line.textContent = data.line;
+            logOutput.appendChild(line);
+            logOutput.scrollTop = logOutput.scrollHeight;
+
+            // Keep last 200 lines
+            while (logOutput.children.length > 200) {
+                logOutput.removeChild(logOutput.firstChild);
+            }
+        });
+
+        socket.on('training_stopped', () => {
+            setStatus('stopped');
+        });
+
+        // UI update functions
+        function updateUI(state) {
+            setStatus(state.status);
+            
+            if (state.steps && state.steps.length > 0) {
+                chart.data.labels = state.steps;
+                chart.data.datasets[0].data = state.total_losses;
+                chart.data.datasets[1].data = state.ar_losses;
+                chart.data.datasets[2].data = state.tpm_losses;
+                chart.data.datasets[3].data = state.smm_losses;
+                chart.update();
+
+                document.getElementById('totalLoss').textContent = state.total_loss.toFixed(4);
+                document.getElementById('arLoss').textContent = state.ar_loss.toFixed(4);
+                document.getElementById('tpmLoss').textContent = state.tpm_loss.toFixed(4);
+                document.getElementById('smmLoss').textContent = state.smm_loss.toFixed(4);
+                document.getElementById('currentStep').textContent = state.current_step;
+                document.getElementById('currentEpoch').textContent = state.current_epoch;
+            }
+        }
+
+        function setStatus(status) {
+            isRunning = status === 'running';
+            const badge = document.getElementById('statusBadge');
+            const text = document.getElementById('statusText');
+            
+            badge.className = 'status-badge ' + status;
+            text.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+
+            document.getElementById('btnStart').disabled = isRunning;
+            document.getElementById('btnStop').disabled = !isRunning;
+            document.getElementById('btnKill').disabled = !isRunning;
+        }
+
+        // Control functions
+        async function startTraining() {
+            const config = {
+                batch_size: parseInt(document.getElementById('batchSize').value),
+                lr: document.getElementById('learningRate').value,
+                epochs: parseInt(document.getElementById('epochs').value),
+                warmup_steps: parseInt(document.getElementById('warmupSteps').value),
+                log_interval: parseInt(document.getElementById('logInterval').value),
+                eval_interval: parseInt(document.getElementById('evalInterval').value),
+                save_interval: parseInt(document.getElementById('saveInterval').value),
+                num_workers: parseInt(document.getElementById('numWorkers').value),
+                lambda_position: parseFloat(document.getElementById('lambdaPosition').value),
+                lambda_stroke: parseFloat(document.getElementById('lambdaStroke').value),
+                max_grad_norm: parseFloat(document.getElementById('maxGradNorm').value),
+                weight_decay: parseFloat(document.getElementById('weightDecay').value),
+                experiment_name: document.getElementById('experimentName').value,
+                log_dir: document.getElementById('logDir').value,
+            };
+
+            try {
+                const response = await fetch('/api/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(config),
+                });
+                
+                if (response.ok) {
+                    setStatus('running');
+                    // Clear previous data
+                    chart.data.labels = [];
+                    chart.data.datasets.forEach(ds => ds.data = []);
+                    chart.update();
+                    document.getElementById('logOutput').innerHTML = '';
+                } else {
+                    const error = await response.json();
+                    alert('Error: ' + error.error);
+                }
+            } catch (e) {
+                alert('Failed to start training: ' + e);
+            }
+        }
+
+        async function stopTraining() {
+            try {
+                const response = await fetch('/api/stop', {method: 'POST'});
+                if (response.ok) {
+                    setStatus('stopping');
+                }
+            } catch (e) {
+                alert('Failed to stop training: ' + e);
+            }
+        }
+
+        async function killTraining() {
+            if (!confirm('Force kill training? This may corrupt checkpoints.')) return;
+            
+            try {
+                const response = await fetch('/api/kill', {method: 'POST'});
+                if (response.ok) {
+                    setStatus('stopped');
+                }
+            } catch (e) {
+                alert('Failed to kill training: ' + e);
+            }
+        }
+
+        // Elapsed time updater
+        setInterval(() => {
+            if (isRunning) {
+                fetch('/api/state')
+                    .then(r => r.json())
+                    .then(state => {
+                        const elapsed = Math.floor(state.elapsed_time);
+                        const h = Math.floor(elapsed / 3600);
+                        const m = Math.floor((elapsed % 3600) / 60);
+                        const s = elapsed % 60;
+                        document.getElementById('elapsedTime').textContent = 
+                            `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+                    });
+            }
+        }, 1000);
+    </script>
+</body>
+</html>
+
