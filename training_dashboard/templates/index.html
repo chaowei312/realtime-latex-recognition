@@ -387,11 +387,15 @@
                 </div>
             </div>
             <div class="config-row" style="margin-top: 12px;">
+                <div class="config-field" style="flex: 1;">
+                    <label>Max Samples (0=all)</label>
+                    <input type="number" id="maxSamples" value="50000" min="0" step="10000" title="Limit dataset size for faster loading. 0 = use all 4M samples">
+                </div>
                 <div class="config-field" style="flex: 2;">
                     <label>Experiment Name</label>
                     <input type="text" id="experimentName" value="dashboard_run" placeholder="experiment_name">
                 </div>
-                <div class="config-field" style="flex: 3;">
+                <div class="config-field" style="flex: 2;">
                     <label>Log Directory</label>
                     <input type="text" id="logDir" value="logs/dashboard_train" placeholder="logs/my_experiment">
                 </div>
@@ -667,6 +671,7 @@
                 weight_decay: parseFloat(document.getElementById('weightDecay').value),
                 experiment_name: document.getElementById('experimentName').value,
                 log_dir: document.getElementById('logDir').value,
+                max_samples: parseInt(document.getElementById('maxSamples').value),
             };
 
             try {

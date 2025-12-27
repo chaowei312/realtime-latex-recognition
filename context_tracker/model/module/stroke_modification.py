@@ -6,6 +6,25 @@ Uses cross-modal scoring (context+visual query vs patch keys) with
 hierarchical aggregation (patch scores → stroke scores).
 
 NOT attention: Uses sigmoid gating (binary decision), not softmax distribution.
+
+Query Design (same as TPM for consistency):
+- Query: concat(h_t, h_VC)
+  - h_t: Current AR hidden state (token identity + context)
+  - h_VC: Visual Class token (spatial position of strokes)
+- This matches TPM's query construction for architectural consistency
+
+Option B Integration (Incremental Stroke Removal):
+- SMM is called at EACH AR step, not just once
+- Identifies strokes contributing to the CURRENT predicted token
+- Previous steps' strokes are already removed (masked out)
+- Supports active_mask to handle already-removed strokes
+
+Per-step flow:
+    Step t: patches (with removed strokes zeroed) → SMM → strokes for token_t
+    → Remove those strokes → Step t+1
+
+Note: INT token is reserved for future teacher distillation with multimodal 
+embeddings. Currently, h_t (AR hidden state) is used for both SMM and TPM.
 """
 
 import torch
@@ -17,25 +36,38 @@ class StrokeModificationModule(nn.Module):
     """
     Multi-Head Stroke Selection Gate (SMM)
     
-    Decides which strokes to commit based on:
-    - Query: concat([INT], [VC]) - context-aware + visual features
-    - Keys: patch tokens grouped by stroke
+    Decides which strokes contributed to the CURRENT predicted token.
+    Called at each AR step (Option B: incremental removal).
+    
+    Query: concat(h_t, h_VC) - same as TPM for consistency
+      - h_t: Current AR hidden state (token identity + context)
+      - h_VC: Visual Class token (spatial stroke position)
+    Keys: patch tokens grouped by stroke (already-removed strokes masked)
     
     Architecture:
         1. Project query (less compression) and keys (more capacity)
-        2. Score each patch: q_h · k_ij
-        3. Average scores within each stroke
+        2. Score each patch: q_h · k_ij (masked patches contribute 0)
+        3. Average scores within each ACTIVE stroke
         4. Average across heads
         5. Sigmoid gating for binary selection
     
     Asymmetric Compression:
         - Query: d_concat → d_head (4× compression if d_head = d_concat/4)
         - Key: d_patch → d_head (2× compression, more capacity preserved)
+    
+    Option B Usage:
+        for t in range(max_steps):
+            # patches already have removed strokes zeroed
+            scores = smm(h_t, h_vc, masked_patches, stroke_indices, active_strokes)
+            # scores only meaningful for active strokes
+            contributing = (scores > threshold) & active_strokes
+            # remove contributing strokes for next step
+            active_strokes = active_strokes & ~contributing
     """
     
     def __init__(
         self,
-        d_int: int,
+        d_t: int,
         d_vc: int,
         d_patch: int,
         num_heads: int = 4,
@@ -44,8 +76,8 @@ class StrokeModificationModule(nn.Module):
     ):
         """
         Args:
-            d_int: Dimension of [INT] token (integration/context)
-            d_vc: Dimension of [VC] token (visual class)
+            d_t: Dimension of h_t (AR hidden state, same as d_model)
+            d_vc: Dimension of h_VC (Visual Class token)
             d_patch: Dimension of patch tokens
             num_heads: Number of selection heads
             dropout: Dropout on projections (optional regularization)
@@ -55,7 +87,7 @@ class StrokeModificationModule(nn.Module):
         
         self.num_heads = num_heads
         self.temperature = temperature
-        d_concat = d_int + d_vc
+        d_concat = d_t + d_vc
         
         # d_head based on concat dimension (query has less compression)
         # Query: d_concat → d_head (4× compression)
@@ -83,28 +115,38 @@ class StrokeModificationModule(nn.Module):
     
     def forward(
         self,
-        h_int: torch.Tensor,
+        h_t: torch.Tensor,
         h_vc: torch.Tensor,
         patch_tokens: torch.Tensor,
         stroke_indices: List[Tuple[int, int]],
+        active_strokes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Compute stroke selection scores.
+        Compute stroke selection scores for CURRENT AR step.
         
         Args:
-            h_int: [B, d_int] - Integration token features
+            h_t: [B, d_t] - AR hidden state (same as TPM query)
             h_vc: [B, d_vc] - Visual class token features
-            patch_tokens: [B, total_patches, d_patch] - All patch token features
+            patch_tokens: [B, total_patches, d_patch] - Patch features (removed strokes zeroed)
             stroke_indices: List of (start, end) tuples defining patch ranges per stroke
+            active_strokes: [B, num_strokes] - Optional mask for still-active strokes
+                           True = stroke still active, False = already removed
+                           If None, all strokes considered active.
         
         Returns:
-            selection_mask: [B, num_strokes] - Sigmoid scores (0=keep, 1=commit)
+            logits: [B, num_strokes] - Pre-sigmoid logits for stroke selection
+                   Inactive strokes have -inf (sigmoid gives 0)
         """
-        B = h_int.shape[0]
+        B = h_t.shape[0]
         num_strokes = len(stroke_indices)
+        device = h_t.device
         
-        # Concat [INT] and [VC] for query
-        h_concat = torch.cat([h_int, h_vc], dim=-1)  # [B, d_concat]
+        # Default: all strokes active
+        if active_strokes is None:
+            active_strokes = torch.ones(B, num_strokes, dtype=torch.bool, device=device)
+        
+        # Concat h_t and h_VC for query (same as TPM)
+        h_concat = torch.cat([h_t, h_vc], dim=-1)  # [B, d_concat]
         
         # Collect scores from all heads
         head_stroke_scores = []
@@ -119,13 +161,13 @@ class StrokeModificationModule(nn.Module):
             
             # Then average within each stroke
             stroke_scores = []
-            for (start, end) in stroke_indices:
+            for s_idx, (start, end) in enumerate(stroke_indices):
                 if end > start:
                     # Average patch scores within this stroke
                     s_score = patch_scores[:, start:end].mean(dim=1)  # [B]
                 else:
-                    # Empty stroke (shouldn't happen, but handle gracefully)
-                    s_score = torch.zeros(B, device=patch_scores.device)
+                    # Empty stroke
+                    s_score = torch.zeros(B, device=device)
                 stroke_scores.append(s_score)
             
             stroke_scores = torch.stack(stroke_scores, dim=1)  # [B, num_strokes]
@@ -135,14 +177,81 @@ class StrokeModificationModule(nn.Module):
         all_head_scores = torch.stack(head_stroke_scores, dim=-1)  # [B, num_strokes, num_heads]
         avg_scores = all_head_scores.mean(dim=-1)  # [B, num_strokes]
         
-        # Apply temperature and sigmoid gating
-        selection_mask = torch.sigmoid(avg_scores / self.temperature)
+        # Apply temperature scaling (return logits, not sigmoid!)
+        logits = avg_scores / self.temperature
         
-        return selection_mask
+        # Mask inactive strokes with -inf (so sigmoid gives 0)
+        logits = logits.masked_fill(~active_strokes, float('-inf'))
+        
+        return logits
+    
+    def get_selection_probs(self, logits: torch.Tensor) -> torch.Tensor:
+        """Convert logits to selection probabilities (apply sigmoid)."""
+        return torch.sigmoid(logits)
+    
+    def get_contributing_strokes(
+        self,
+        selection_mask: torch.Tensor,
+        active_strokes: torch.Tensor,
+        threshold: float = 0.5,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get strokes contributing to current token and update active mask.
+        
+        Args:
+            selection_mask: [B, num_strokes] - SMM output scores
+            active_strokes: [B, num_strokes] - Current active mask
+            threshold: Selection threshold
+            
+        Returns:
+            contributing: [B, num_strokes] - Bool mask of contributing strokes
+            new_active: [B, num_strokes] - Updated active mask (contributing removed)
+        """
+        # Strokes above threshold AND still active
+        contributing = (selection_mask > threshold) & active_strokes
+        
+        # Remove contributing strokes from active set
+        new_active = active_strokes & ~contributing
+        
+        return contributing, new_active
+    
+    def remove_strokes_from_patches(
+        self,
+        patch_tokens: torch.Tensor,
+        stroke_indices: List[Tuple[int, int]],
+        strokes_to_remove: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Zero out patches belonging to removed strokes.
+        
+        Args:
+            patch_tokens: [B, total_patches, d_patch] - Current patch tokens
+            stroke_indices: List of (start, end) for each stroke
+            strokes_to_remove: [B, num_strokes] - Bool mask of strokes to remove
+            
+        Returns:
+            masked_patches: [B, total_patches, d_patch] - Patches with removed strokes zeroed
+        """
+        B, total_patches, d_patch = patch_tokens.shape
+        device = patch_tokens.device
+        
+        # Build patch-level mask from stroke-level mask
+        patch_mask = torch.ones(B, total_patches, dtype=torch.bool, device=device)
+        
+        for s_idx, (start, end) in enumerate(stroke_indices):
+            # If stroke is marked for removal, zero its patches
+            stroke_removed = strokes_to_remove[:, s_idx]  # [B]
+            for p_idx in range(start, end):
+                patch_mask[:, p_idx] = patch_mask[:, p_idx] & ~stroke_removed
+        
+        # Apply mask (keep active patches, zero removed)
+        masked_patches = patch_tokens * patch_mask.unsqueeze(-1).float()
+        
+        return masked_patches
     
     def forward_with_padding(
         self,
-        h_int: torch.Tensor,
+        h_t: torch.Tensor,
         h_vc: torch.Tensor,
         patch_tokens: torch.Tensor,
         stroke_lengths: torch.Tensor,
@@ -152,8 +261,8 @@ class StrokeModificationModule(nn.Module):
         Alternative forward for batched data with padding.
         
         Args:
-            h_int: [B, d_int]
-            h_vc: [B, d_vc]
+            h_t: [B, d_t] - AR hidden state
+            h_vc: [B, d_vc] - Visual class token
             patch_tokens: [B, num_strokes, max_patches, d_patch] - Padded patches
             stroke_lengths: [B, num_strokes] - Actual number of patches per stroke
             max_patches_per_stroke: Maximum patches per stroke (for mask)
@@ -163,8 +272,8 @@ class StrokeModificationModule(nn.Module):
         """
         B, num_strokes, max_patches, d_patch = patch_tokens.shape
         
-        # Concat [INT] and [VC]
-        h_concat = torch.cat([h_int, h_vc], dim=-1)  # [B, d_concat]
+        # Concat h_t and h_VC (same as TPM)
+        h_concat = torch.cat([h_t, h_vc], dim=-1)  # [B, d_concat]
         
         # Create padding mask: [B, num_strokes, max_patches]
         patch_range = torch.arange(max_patches, device=stroke_lengths.device)
@@ -264,7 +373,7 @@ def create_stroke_modification_module(
     """
     Factory function for StrokeModificationModule with typical config.
     
-    Assumes d_int = d_vc = d_patch = d_model (common case).
+    Assumes d_t = d_vc = d_patch = d_model (common case).
     
     Args:
         d_model: Base model dimension
@@ -276,7 +385,7 @@ def create_stroke_modification_module(
         StrokeModificationModule instance
     """
     return StrokeModificationModule(
-        d_int=d_model,
+        d_t=d_model,
         d_vc=d_model,
         d_patch=d_model,
         num_heads=num_heads,

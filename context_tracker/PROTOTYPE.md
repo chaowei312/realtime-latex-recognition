@@ -133,21 +133,29 @@ n=20, p=16:  Existing ~683K ops  vs  Ours ~5K ops  →  ~130× speedup
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│  TPM: ACTION EMBEDDINGS = PARENT EMBEDDING + RELATION EMBEDDING                 │
+│  TPM: REUSES TRANSFORMER K CACHE + RELATION EMBEDDINGS                          │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                  │
+│  Key Insight: h_t was produced by attending to transformer's K cache           │
+│  → TPM should use the SAME K cache for consistency!                            │
+│                                                                                  │
 │  Query: concat(h_t, h_VC)  ← h_t for context, h_VC for spatial stroke location │
-│  Keys:  Action embeddings (parent_token + relation_type)                       │
+│  Keys:  K_transformer + relation_emb (additive conditioning)                   │
 │                                                                                  │
-│  Why concat(h_t, h_VC)?                                                         │
+│  Why reuse transformer's K cache?                                              │
 │  ═══════════════════════════════════════════════════════════                   │
-│  • h_t: Already attended to LaTeX context + [INT], knows WHAT symbol           │
-│  • h_VC: Contains WHERE strokes are placed (spatial information)               │
-│  • Together: shares positional load from h_t, avoids overloading               │
+│  • h_t "knows" what it attended to during AR                                   │
+│  • K cache contains positional encodings h_t learned from                      │
+│  • No redundant key projection - just add relation embeddings                  │
+│  • Full consistency: h_t's knowledge matches TPM's keys                        │
 │                                                                                  │
-│  Compare to SMM query concat(h_INT, h_VC):                                     │
-│  • SMM needs global context (h_INT) to disambiguate (I vs 1)                   │
-│  • TPM needs token-specific position (h_t) + stroke location (h_VC)            │
+│  Action Keys Construction:                                                      │
+│  ┌─────────────────────────────────────────────────────────────────┐           │
+│  │  K_transformer[:, h, :, :]  +  relation_proj[h](rel_emb)        │           │
+│  │       [B, N, d_head]              [R, d_head]                   │           │
+│  │              ↓                                                   │           │
+│  │       broadcast add → [B, N, R, d_head] → [B, N*R, d_head]      │           │
+│  └─────────────────────────────────────────────────────────────────┘           │
 │                                                                                  │
 │  Action Space (grows as we generate):                                          │
 │  ┌────────────────────────────────────────┐                                    │
@@ -157,10 +165,10 @@ n=20, p=16:  Existing ~683K ops  vs  Ours ~5K ops  →  ~130× speedup
 │  │ ... + newly generated tokens           │                                    │
 │  └────────────────────────────────────────┘                                    │
 │                                                                                  │
-│  Multi-head attention (same pattern as SMM):                                   │
-│    q_h = W_q_h(concat(h_t, h_VC))  → [d_head]                                  │
-│    k_h = W_k_h(action_emb)         → [N*R, d_head]                             │
-│    scores = q_h · k_h^T            → [N*R]                                     │
+│  Multi-head scoring (head-to-head match with transformer):                     │
+│    q_h = W_q_h(concat(h_t, h_VC))           → [d_head]                         │
+│    k_h = K_cache[:, h] + relation_proj[h]   → [N*R, d_head]  (from cache!)     │
+│    scores_h = q_h · k_h^T / √d_head         → [N*R]                            │
 │    action_probs = softmax(avg_across_heads(scores))                            │
 │                                                                                  │
 │  Output: selected_action = argmax(action_probs)                                │
@@ -169,29 +177,52 @@ n=20, p=16:  Existing ~683K ops  vs  Ours ~5K ops  →  ~130× speedup
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### TPM vs SMM Query Design
+### TPM vs SMM Design Comparison
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│  WHY DIFFERENT QUERIES FOR SMM AND TPM?                                         │
+│  SMM vs TPM: UNIFIED QUERY, DIFFERENT KEY SOURCES                               │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                  │
-│  MODULE     │ QUERY                │ REASON                                    │
-│  ═══════════╪══════════════════════╪════════════════════════════════════════   │
-│  SMM        │ concat(h_INT, h_VC)  │ Global context (I vs 1) + visual patches │
-│  TPM        │ concat(h_t, h_VC)    │ Token-specific + where stroke placed     │
+│  MODULE │ QUERY             │ KEYS                    │ OUTPUT                 │
+│  ═══════╪═══════════════════╪═════════════════════════╪════════════════════════│
+│  SMM    │ concat(h_t, h_VC) │ Patch tokens (own proj) │ Stroke logits → sigmoid│
+│  TPM    │ concat(h_t, h_VC) │ K_cache + relation_emb  │ Action logits → softmax│
 │                                                                                  │
-│  SMM Decision: "Which strokes made this symbol?"                               │
-│    • Needs INT: global context disambiguates similar strokes (I/1)             │
-│    • Needs VC: knows which patches are candidates                              │
+│  ──────────────────────────────────────────────────────────────────────────    │
 │                                                                                  │
-│  TPM Decision: "Where does this token attach in the tree?"                     │
-│    • Needs h_t: current token's identity and context                           │
-│    • Needs VC: WHERE user wrote it (spatial position → SUB/SUP/RIGHT)          │
-│    • Does NOT need INT: position is local, not global disambiguation           │
+│  UNIFIED QUERY: Both use concat(h_t, h_VC)                                     │
+│  ═══════════════════════════════════════════                                    │
+│    • h_t: AR hidden state (token identity + context structure)                 │
+│    • h_VC: Visual Class token (spatial stroke positions)                       │
+│    • Same query construction for architectural consistency                      │
 │                                                                                  │
-│  Key Insight: VC carries SPATIAL info that h_t doesn't have                    │
-│               This shares the positional burden from h_t                        │
+│  ──────────────────────────────────────────────────────────────────────────    │
+│                                                                                  │
+│  SMM: "Which strokes contributed to THIS token?"                               │
+│  ════════════════════════════════════════════════                               │
+│    Keys: W_k(patch_tokens) — project patches to key space                      │
+│    Scoring: q_h · k_patch → avg per stroke → sigmoid                           │
+│    Output: Per-stroke binary selection [0,1]                                   │
+│                                                                                  │
+│  TPM: "Where does THIS token attach in the tree?"                              │
+│  ═════════════════════════════════════════════════                              │
+│    Keys: ROOT_key + relation_emb (for single-step training)                    │
+│    Scoring: q_h · k_action → softmax                                           │
+│    Output: Action probs over (parent, relation) pairs                          │
+│                                                                                  │
+│  ──────────────────────────────────────────────────────────────────────────    │
+│                                                                                  │
+│  Why different key sources?                                                    │
+│  ═══════════════════════════                                                    │
+│    TPM: Predicting tree attachment → use expression structure (ROOT/K_cache)  │
+│    SMM: Predicting stroke membership → use visual patch features              │
+│                                                                                  │
+│  ──────────────────────────────────────────────────────────────────────────    │
+│                                                                                  │
+│  NOTE: [INT] token reserved for future teacher distillation                   │
+│        Currently, h_t (from INT position) is used for all heads               │
+│        Future: [INT] ← KL distillation from multimodal embedding teacher      │
 │                                                                                  │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -214,6 +245,91 @@ n=20, p=16:  Existing ~683K ops  vs  Ours ~5K ops  →  ~130× speedup
 │                                                                                  │
 │  Note: No "_" token! SUB relation encodes subscript.                           │
 │        Tree-to-LaTeX conversion adds syntax in post-processing.                │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Option B: Incremental Stroke Removal During AR
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  WHY OPTION B? Model must see REMAINING strokes, not full image                │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  WRONG (Option A): Same image every step                                        │
+│  ════════════════════════════════════════                                       │
+│  Step 1: See [a+b=c image], context=[], target="a"                             │
+│  Step 2: See [a+b=c image], context=[a], target="+"  ← Still sees "a"!         │
+│  Problem: Model can "cheat" - reads from image instead of learning             │
+│                                                                                  │
+│  CORRECT (Option B): Remove strokes after each step                            │
+│  ══════════════════════════════════════════════════                            │
+│  Step 1: See [a+b=c image], context=[], target="a"                             │
+│          → SMM identifies strokes for "a" → REMOVE                             │
+│  Step 2: See [+b=c image], context=[a], target="+"   ← "a" strokes gone!       │
+│          → SMM identifies strokes for "+" → REMOVE                             │
+│  Step 3: See [b=c image], context=[a,+], target="b"  ← "a+" strokes gone!      │
+│                                                                                  │
+│  Training: Teacher forcing with per-token stroke labels                        │
+│  Inference: SMM predictions identify strokes to remove                         │
+│                                                                                  │
+│  ──────────────────────────────────────────────────────────────────────────    │
+│                                                                                  │
+│  Data requirement: Per-token stroke labels                                      │
+│  ┌─────────────────────────────────────────────────────────────────┐           │
+│  │  sample = {                                                      │           │
+│  │      "tokens": ["a", "+", "b", "=", "c"],                       │           │
+│  │      "stroke_labels": [                                          │           │
+│  │          [0, 1],    # strokes 0,1 → "a"                         │           │
+│  │          [2],       # stroke 2 → "+"                            │           │
+│  │          [3, 4],    # strokes 3,4 → "b"                         │           │
+│  │          [5],       # stroke 5 → "="                            │           │
+│  │          [6, 7],    # strokes 6,7 → "c"                         │           │
+│  │      ]                                                           │           │
+│  │  }                                                               │           │
+│  └─────────────────────────────────────────────────────────────────┘           │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### K Cache Management with Recomputation
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  K CACHE UPDATES: APPEND-ONLY vs RECOMPUTATION                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  Most actions: APPEND-ONLY (fast)                                               │
+│  ════════════════════════════════                                               │
+│  RIGHT, SUP, SUB: Linear tree growth, just append new token's key              │
+│                                                                                  │
+│  Step 1: K_cache = [K_a]                                                        │
+│  Step 2: K_cache = [K_a, K_+]      ← append                                    │
+│  Step 3: K_cache = [K_a, K_+, K_b] ← append                                    │
+│                                                                                  │
+│  ──────────────────────────────────────────────────────────────────────────    │
+│                                                                                  │
+│  Structural actions: RECOMPUTATION needed                                       │
+│  ═════════════════════════════════════════                                      │
+│  ABOVE, BELOW (fraction): Wraps existing tokens in new structure               │
+│  INSIDE (sqrt, etc): Changes tree positions of wrapped tokens                  │
+│                                                                                  │
+│  Example: Writing "c" below "a+b" → \frac{a+b}{c}                              │
+│                                                                                  │
+│  Before: [K_a, K_+, K_b]        (linear)                                       │
+│  After:  [K_frac, K_a', K_+', K_b', K_c]  (a,+,b now children of frac)        │
+│          → Need to recompute K_a', K_+', K_b' if using tree positions          │
+│                                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────┐           │
+│  │  Relation        │ K Cache Action  │ Reason                     │           │
+│  │  ════════════════╪═════════════════╪════════════════════════════│           │
+│  │  RIGHT           │ Append          │ Linear sequence            │           │
+│  │  SUP             │ Append          │ Parent unchanged           │           │
+│  │  SUB             │ Append          │ Parent unchanged           │           │
+│  │  ABOVE           │ RECOMPUTE       │ Creates fraction wrapper   │           │
+│  │  BELOW           │ RECOMPUTE       │ Creates fraction wrapper   │           │
+│  │  INSIDE          │ RECOMPUTE       │ Wraps in structure         │           │
+│  └─────────────────────────────────────────────────────────────────┘           │
 │                                                                                  │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -277,41 +393,51 @@ n=20, p=16:  Existing ~683K ops  vs  Ours ~5K ops  →  ~130× speedup
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Three-Head Training
+### Three-Head Training (with Option B)
 
 | Component | Role | Training Signal |
 |-----------|------|-----------------|
 | **[VC]** | Visual Class (patches → visual embedding) | Implicit via SMM |
-| **[INT]** | Integration (context + [VC] → decision) | **Head A + Teacher distill** |
-| **Head A** | Recognition: h_INT → FFN → symbol | Cross-entropy |
-| **SMM (B)** | Stroke Modification: multi-head selection gate | BCE on stroke labels |
-| **Head C** | Position: h_t → action attention → (parent, rel) | Cross-entropy on action |
+| **h_t** | AR hidden state (from INT position) | Used by all heads |
+| **Head A** | Recognition: h_t → FFN → symbol | Cross-entropy |
+| **SMM (B)** | Stroke: concat(h_t, h_VC) → patch scores | BCE on stroke labels |
+| **TPM (C)** | Position: concat(h_t, h_VC) → ROOT actions | Cross-entropy on action |
+
+**Note**: [INT] token reserved for future teacher distillation.
 
 ```
 Loss = L_symbol + λ₁·L_position + λ₂·L_stroke_select + λ₃·KL([INT] ∥ Teacher)
 
-where:
-  L_symbol = CE(FFN(h_t), target_symbol)       # Head A: what token?
-  
-  L_position = CE(action_probs, target_action)  # Head C (TPM): where to insert?
-    q = concat(h_t, h_VC)                       # token-specific + spatial
-    action_probs = softmax(q · K_actions)       # attention over action embeddings
-    action = (parent_idx, relation_type)
-  
-  L_stroke_select: (score first, then pool)    # Head B (SMM)
-    q = concat(h_INT, h_VC)                     # global context + visual
-    patch_score_ij = q_h · k_ij
-    stroke_score_i = mean(patch_scores)
-    final_i = mean across heads
-    L = BCE(σ(final_i), y_stroke_i)
-  
-  KL term: Teacher VLM guides [INT] for disambiguation
+Training Loop (Option B: Incremental Stroke Removal):
+══════════════════════════════════════════════════════
 
-Consistent pattern across all heads:
-  • SMM query: concat(h_INT, h_VC) - global + visual
-  • TPM query: concat(h_t, h_VC)   - token + spatial
-  • Keys from different embedding spaces (vocab, patches, actions)
-  • Multi-head attention for robustness
+for t in range(sequence_length):
+    # 1. Compute on CURRENT image (previous strokes removed)
+    masked_patches = remove_strokes(patches, already_removed)
+    h_int, h_vc = compute_tokens(masked_patches, context)
+    h_t, k_cache = transformer_step(masked_patches, context)
+    
+    # 2. Head A: Symbol prediction
+    L_symbol += CE(symbol_head(h_t), target_tokens[t])
+    
+    # 3. TPM: Position prediction (uses K_cache!)
+    q = concat(h_t, h_VC)
+    action_keys = K_cache + relation_emb      # Reuse transformer's K!
+    action_probs = softmax(q · action_keys)
+    L_position += CE(action_probs, target_positions[t])
+    
+    # 4. SMM: Stroke selection
+    stroke_scores = SMM(h_int, h_vc, masked_patches, active_strokes)
+    L_stroke += BCE(stroke_scores, stroke_labels[t])
+    
+    # 5. REMOVE strokes for this token (teacher forcing)
+    already_removed |= stroke_labels[t]
+
+Key differences from naive approach:
+  • Image CHANGES each step (strokes removed)
+  • Model learns to recognize REMAINING strokes
+  • SMM gets per-token stroke labels
+  • TPM uses transformer's K_cache (not separate projection)
 ```
 
 ---
@@ -371,22 +497,114 @@ Source options:
 Model learns: complete → output, incomplete → wait/ignore
 ```
 
+### Tree-to-LaTeX Conversion (Hardcoded Post-Processing)
+
+```
+MODEL OUTPUTS DURING AR:
+════════════════════════
+  • Content tokens ONLY: "a", "+", "b", "2", "x", etc.
+  • Relations via TPM: RIGHT, SUP, SUB, ABOVE, BELOW, INSIDE
+
+MODEL NEVER OUTPUTS:
+════════════════════
+  • LaTeX syntax: \frac, {, }, ^, _, \sqrt, etc.
+  • These are added by hardcoded tree-to-LaTeX conversion!
+
+CONVERSION RULES:
+═════════════════
+  RIGHT  → concatenation:     a RIGHT b  →  "ab"
+  SUP    → superscript:       a SUP 2    →  "a^{2}"
+  SUB    → subscript:         a SUB i    →  "a_{i}"
+  ABOVE  → fraction num:      / ABOVE a  →  (builds \frac{a}{...})
+  BELOW  → fraction denom:    / BELOW b  →  (builds \frac{...}{b})
+  INSIDE → structure:         √ INSIDE x →  "\sqrt{x}"
+
+EXAMPLE: User writes fraction
+══════════════════════════════
+
+  User writes:     a + b    (strokes at y=0-20)
+                   ─────    (stroke at y=25-30) ← fraction bar
+                     2      (stroke at y=35-50)
+
+  Model AR output:
+  ┌──────┬───────┬──────────────────┬────────────────┐
+  │ Step │ Token │ Action           │ Tree           │
+  ├──────┼───────┼──────────────────┼────────────────┤
+  │  1   │  "a"  │ (ROOT, START)    │ a              │
+  │  2   │  "+"  │ (a, RIGHT)       │ a → +          │
+  │  3   │  "b"  │ (+, RIGHT)       │ a → + → b      │
+  │  4   │  "2"  │ (b, BELOW)       │ a → + → b      │
+  │      │       │                  │          ↓     │
+  │      │       │                  │          2     │
+  └──────┴───────┴──────────────────┴────────────────┘
+
+  Hardcoded conversion:
+    Tree with BELOW relation → detect fraction pattern
+    → Wrap (a, +, b) as numerator, (2) as denominator
+    → Output: "\frac{a+b}{2}"
+
+IMPLEMENTATION:
+═══════════════
+  context_tracker/model/tree_to_latex.py:
+    • ExpressionTree: builds tree from tokens + actions
+    • TreeToLatex: converts tree to LaTeX string
+    • SpatialRelationInferrer: infers relations from bboxes
+```
+
+### Spatial Relation Inference (Training Label Generation)
+
+```
+FROM BBOXES TO ACTION LABELS:
+═════════════════════════════
+
+  MathWriting provides per-symbol bounding boxes:
+    symbol="a", bbox=(0, 10, 15, 30)   ← x at y=10-30
+    symbol="2", bbox=(18, 5, 25, 15)   ← 2 higher, to right → SUP
+
+  SpatialRelationInferrer detects:
+  ┌─────────────────────────────────────────────────────────────┐
+  │ Condition                          │ Inferred Relation      │
+  ├─────────────────────────────────────────────────────────────┤
+  │ Child above parent, large overlap  │ ABOVE (fraction num)   │
+  │ Child below parent, large overlap  │ BELOW (fraction denom) │
+  │ Child above parent, to right       │ SUP (superscript)      │
+  │ Child below parent, to right       │ SUB (subscript)        │
+  │ Child to right, similar height     │ RIGHT (sequence)       │
+  │ Child overlaps parent interior     │ INSIDE (sqrt/matrix)   │
+  └─────────────────────────────────────────────────────────────┘
+
+  Used in: context_tracker/training/dataset.py
+    → Generates proper target_actions for TPM training
+    → Enables fraction, subscript, superscript learning
+```
+
 ---
 
 ## 4. Implementation Checklist
 
-### Week 1: Recognition Baseline
-- [ ] MathWriting synthetic data loader (chunks + bboxes)
-- [ ] Chunk renderer: strokes → image (+ stroke artifacts overlay)
-- [ ] Standard Conv2D patch embedding (4×4 grid)
-- [ ] Train: context (text) + chunk (image) → LaTeX decoder
+### Core Modules (Completed ✓)
+- [x] **SMM**: Multi-head stroke modification module (`module/stroke_modification.py`)
+- [x] **TPM**: Tree-aware position module with K-cache reuse (`module/position_head.py`)
+- [x] **KCacheManager**: K-cache with append/recomputation logic (`module/k_cache_manager.py`)
+- [x] **VisualPatchEncoder**: Stacked 3x3 conv → 8×8 patches (`module/visual_encoder.py`)
+- [x] **RelationshipTensor**: LaTeX → 3D relation tensor (`module/relationship_tensor.py`)
+- [x] **ContextTrackerModel**: Full model integration (`context_tracker.py`)
+- [x] **Tree-to-LaTeX**: Hardcoded conversion (`tree_to_latex.py`)
+- [x] **SpatialRelationInferrer**: Bbox → action labels (`tree_to_latex.py`)
 
-### Week 2: [INT] + Trajectory
+### Data Pipeline (Completed ✓)
+- [x] MathWriting atomic loader with per-symbol bboxes (`data/mathwriting_atomic.py`)
+- [x] ChunkRenderer: strokes → image + artifact overlay
+- [x] CompositionalAugmentor: context + edit chunk generation
+- [x] EditDataset with proper action label inference (`training/dataset.py`)
+
+### Training (Pending)
+- [ ] Train recognition: context (text) + chunk (image) → LaTeX
 - [ ] Add [INT] token with teacher distillation
 - [ ] Extract trajectory embeddings from [INT]
 - [ ] t-SNE visualization + classification
 
-### Week 3: Paper
+### Paper
 - [ ] Efficiency comparison table
 - [ ] Figures: architecture, t-SNE, efficiency
 - [ ] Write method section

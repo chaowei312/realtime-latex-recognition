@@ -188,11 +188,12 @@ def start_training():
         weight_decay = config.get('weight_decay', 0.01)
         experiment_name = config.get('experiment_name', 'dashboard')
         log_dir = config.get('log_dir', 'logs/dashboard_train')
+        max_samples = config.get('max_samples', 50000)  # Default 50k for faster loading
         
-        # Build command
+        # Build command with -u for unbuffered output
         project_root = Path(__file__).parent.parent
         cmd = [
-            sys.executable, '-m', 'context_tracker.training.train',
+            sys.executable, '-u', '-m', 'context_tracker.training.train',
             '--batch_size', str(batch_size),
             '--lr', str(lr),
             '--epochs', str(epochs),
@@ -205,8 +206,15 @@ def start_training():
             '--num_workers', str(num_workers),
         ]
         
-        # Start process
+        # Add max_samples if specified (0 means use all)
+        if max_samples > 0:
+            cmd.extend(['--max_samples', str(max_samples)])
+        
+        # Start process with unbuffered output
         try:
+            env = os.environ.copy()
+            env['PYTHONUNBUFFERED'] = '1'  # Force unbuffered output
+            
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -214,6 +222,7 @@ def start_training():
                 text=True,
                 bufsize=1,
                 cwd=str(project_root),
+                env=env,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0,
             )
             

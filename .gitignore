@@ -59,3 +59,21 @@ Thumbs.db
 .env
 .env.local
 
+**/mathwriting-2024/train/
+
+# Prepared/cached training data
+data/prepared/
+**/prepared/*.pkl
+**/prepared/*.json
+
+
+# MathWriting dataset (large)
+**/mathwriting-2024/valid/
+**/mathwriting-2024/test/
+
+
+# Large MathWriting files
+**/synthetic-bboxes.jsonl
+**/symbols.jsonl
+**/*.stackdump
+
