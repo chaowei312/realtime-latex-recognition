@@ -29,6 +29,8 @@ env/
 **/line_text_dataset/
 **/stroke_letter_dataset/
 **/visualizations/
+**/mathwriting-2024/synthetic/
+**/mathwriting-2024/symbols/
 
 # Model checkpoints & outputs
 checkpoints/
