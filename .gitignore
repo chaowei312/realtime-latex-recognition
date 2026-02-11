@@ -77,3 +77,7 @@ data/prepared/
 **/symbols.jsonl
 **/*.stackdump
 
+
+# IDE config
+.cursorignore
+.cursor/
